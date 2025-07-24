@@ -87,8 +87,8 @@ Create a `.env` file in the root directory to customize settings:
 # ===========================================
 # AI/LLM Configuration (Optional)
 # ===========================================
-OPENAI_API_KEY=***REMOVED***your-openai-key-here
-ANTHROPIC_API_KEY=***REMOVED***ant-your-anthropic-key
+OPENAI_API_KEY=sk-your-openai-key-here
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
 
 # ===========================================  
 # Quality Thresholds (Defaults - Change via UI)

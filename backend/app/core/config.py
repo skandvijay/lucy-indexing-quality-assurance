@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     azure_tenant_id: Optional[str] = None
     
     # LLM Configuration
-    openai_api_key: str = "***REMOVED***proj-zJztlOzrgP7OTLptWiUkhhmI73vdxY-zzwE0kP1TqmSQy1AojXfNRzpXd1HCaZ9mfzuJzWU_A2T3BlbkFJQ1Nrmj8rSZtRnMgy7Evf40Vmac5V_gC9ifnf5cr0xCjFlH1iy51iajy45-7RwkRyRRxmjS00MA"
+    openai_api_key: str = ""
     openai_max_tokens: int = 1000
     openai_temperature: float = 0.1
     openai_rate_limit_requests_per_minute: int = 60
