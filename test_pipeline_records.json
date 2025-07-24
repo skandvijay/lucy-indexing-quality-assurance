@@ -1,0 +1,16 @@
+[
+  {
+    "id": "test_pipeline_1",
+    "title": "AI-Powered Customer Service Excellence",
+    "content": "Our advanced AI customer service system leverages machine learning algorithms to provide personalized, efficient support experiences. The system analyzes customer sentiment, predicts needs, and routes inquiries to the most qualified representatives, resulting in 40% faster resolution times and 95% customer satisfaction ratings.",
+    "tags": ["artificial-intelligence", "customer-service", "machine-learning"],
+    "metadata": {"source": "pipeline_test", "category": "technology"}
+  },
+  {
+    "id": "test_pipeline_2", 
+    "title": "Sustainable Energy Solutions",
+    "content": "This document outlines comprehensive renewable energy strategies for corporate sustainability. Topics include solar panel installation, energy storage systems, and carbon footprint reduction methodologies.",
+    "tags": ["renewable-energy", "sustainability", "corporate"],
+    "metadata": {"source": "pipeline_test", "category": "environment"}
+  }
+]

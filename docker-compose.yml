@@ -1,0 +1,234 @@
+# =============================================================================
+# INDEXING QA PIPELINE - DOCKER COMPOSE CONFIGURATION
+# =============================================================================
+# Production-ready Docker Compose setup for AI Quality Assurance Pipeline
+# Version: 1.0.0
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # MAIN APPLICATION SERVICE
+  # =============================================================================
+  indexing-qa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NODE_ENV=production
+    container_name: indexing-qa-pipeline
+    restart: unless-stopped
+    
+    # Port Configuration
+    ports:
+      - "3000:3000"   # Frontend (Next.js)
+      - "8000:8000"   # Backend (FastAPI)
+    
+    # Environment Variables
+    environment:
+      # =========================================
+      # DATABASE CONFIGURATION
+      # =========================================
+      - DB_PATH=/app/backend/indexing_qa.db
+      
+      # =========================================
+      # API SERVER CONFIGURATION
+      # =========================================
+      - FASTAPI_HOST=0.0.0.0
+      - FASTAPI_PORT=8000
+      - FASTAPI_RELOAD=false
+      - WORKERS=1
+      - MAX_REQUESTS=1000
+      - TIMEOUT=30
+      
+      # =========================================
+      # FRONTEND CONFIGURATION
+      # =========================================
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      
+      # =========================================
+      # AI/LLM CONFIGURATION (Optional)
+      # =========================================
+      # Add your API keys here or in .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LLM_TIMEOUT=30
+      - LLM_MAX_RETRIES=3
+      
+      # =========================================
+      # QUALITY THRESHOLDS (Configurable via UI)
+      # =========================================
+      - APPROVAL_QUALITY_SCORE_THRESHOLD=50.0
+      - SEMANTIC_RELEVANCE_THRESHOLD=0.15
+      - DOMAIN_RELEVANCE_THRESHOLD=0.1
+      - CONTEXT_COHERENCE_THRESHOLD=0.1
+      - TAG_SPECIFICITY_THRESHOLD=0.8
+      
+      # =========================================
+      # LLM INVOCATION SETTINGS
+      # =========================================
+      - LLM_INVOCATION_MODE=percentage
+      - LLM_PERCENTAGE_THRESHOLD=85.0
+      - LLM_WEIGHTED_THRESHOLD=0.8
+      - LLM_SMART_TRIGGERING=true
+      
+      # =========================================
+      # EXTERNAL API INGESTION SETTINGS
+      # =========================================
+      - EXTERNAL_API_ENABLED=true
+      - EXTERNAL_API_BATCH_SIZE=1000
+      - EXTERNAL_API_RATE_LIMIT=100
+      - EXTERNAL_API_MAX_CONCURRENT=20
+      - EXTERNAL_API_TIMEOUT=30
+      - EXTERNAL_API_RETRY_ATTEMPTS=3
+      
+      # =========================================
+      # PERFORMANCE & MONITORING
+      # =========================================
+      - ENABLE_METRICS=true
+      - ENABLE_REQUEST_LOGGING=true
+      - LOG_LEVEL=INFO
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      
+      # =========================================
+      # SECURITY SETTINGS
+      # =========================================
+      - SECURE_COOKIES=true
+      - CSRF_PROTECTION=true
+      - RATE_LIMITING=true
+      
+    # Volume Mounts
+    volumes:
+      # Persistent data storage
+      - indexing_qa_data:/app/backend
+      - indexing_qa_logs:/app/logs
+      - indexing_qa_uploads:/app/uploads
+      
+      # Configuration files (optional)
+      - ./env.example:/app/.env:ro
+      
+    # Health Check Configuration
+    healthcheck:
+      test: |
+        curl -f http://localhost:8000/health &&
+        curl -f http://localhost:3000 || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Resource Limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    
+    # Logging Configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Labels for monitoring and management
+    labels:
+      - "com.indexing-qa.service=main"
+      - "com.indexing-qa.version=1.0.0"
+      - "com.indexing-qa.environment=production"
+      
+      # Traefik labels (if using Traefik reverse proxy)
+      - "traefik.enable=true"
+      - "traefik.docker.network=indexing-qa-network"
+      
+      # Frontend routing
+      - "traefik.http.routers.indexing-qa-frontend.rule=Host(`indexing-qa.local`)"
+      - "traefik.http.routers.indexing-qa-frontend.service=indexing-qa-frontend"
+      - "traefik.http.services.indexing-qa-frontend.loadbalancer.server.port=3000"
+      
+      # API routing
+      - "traefik.http.routers.indexing-qa-api.rule=Host(`api.indexing-qa.local`)"
+      - "traefik.http.routers.indexing-qa-api.service=indexing-qa-api"
+      - "traefik.http.services.indexing-qa-api.loadbalancer.server.port=8000"
+    
+    # Dependencies
+    depends_on:
+      - db-backup
+
+  # =============================================================================
+  # DATABASE BACKUP SERVICE (Optional but recommended)
+  # =============================================================================
+  db-backup:
+    image: alpine:latest
+    container_name: indexing-qa-db-backup
+    restart: unless-stopped
+    
+    volumes:
+      - indexing_qa_data:/data:ro
+      - indexing_qa_backups:/backups
+    
+    environment:
+      - BACKUP_SCHEDULE=0 2 * * *  # Daily at 2 AM
+      - BACKUP_RETENTION_DAYS=7
+    
+    command: |
+      sh -c '
+        apk add --no-cache sqlite dcron
+        echo "0 2 * * * sqlite3 /data/indexing_qa.db \".backup /backups/backup_\$$(date +%Y%m%d_%H%M%S).db\"" | crontab -
+        echo "0 3 * * * find /backups -name \"backup_*.db\" -mtime +7 -delete" | crontab -
+        crond -f -d 8
+      '
+    
+    labels:
+      - "com.indexing-qa.service=backup"
+
+# =============================================================================
+# VOLUMES CONFIGURATION
+# =============================================================================
+volumes:
+  # Persistent application data
+  indexing_qa_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}
+  
+  # Application logs
+  indexing_qa_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LOGS_DIR:-./logs}
+  
+  # File uploads
+  indexing_qa_uploads:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${UPLOADS_DIR:-./uploads}
+  
+  # Database backups
+  indexing_qa_backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${BACKUPS_DIR:-./backups}
+
+# =============================================================================
+# NETWORKS CONFIGURATION
+# =============================================================================
+networks:
+  default:
+    name: indexing-qa-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 

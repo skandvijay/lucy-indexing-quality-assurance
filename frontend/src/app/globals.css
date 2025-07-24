@@ -1,0 +1,332 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #111827;  /* Darker for better contrast */
+  --muted: #6b7280;
+  --muted-foreground: #374151;
+  --border: #e5e7eb;
+  --input: #f9fafb;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #374151;
+  --accent: #f3f4f6;
+  --accent-foreground: #374151;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #f9fafb;
+    --muted: #6b7280;
+    --muted-foreground: #9ca3af;
+    --border: #374151;
+    --input: #1f2937;
+    --card: #111827;
+    --card-foreground: #f9fafb;
+    --primary: #3b82f6;
+    --primary-foreground: #ffffff;
+    --secondary: #374151;
+    --secondary-foreground: #f9fafb;
+    --accent: #374151;
+    --accent-foreground: #f9fafb;
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
+
+/* Ensure all text has proper contrast */
+* {
+  /* Ensure text is never invisible */
+  color: inherit;
+}
+
+/* Base text colors for common elements */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+p {
+  color: var(--foreground);
+}
+
+/* Card components with explicit text colors */
+.card {
+  background-color: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+}
+
+/* Input elements */
+input, textarea, select {
+  background-color: var(--input);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Enhanced Button Styling */
+button {
+  color: var(--foreground);
+  font-weight: 500;
+  transition: all 0.2s ease-in-out;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Primary Buttons */
+button.bg-blue-600,
+.bg-blue-600 {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  border: none;
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+}
+
+button.bg-blue-600:hover,
+.bg-blue-600:hover {
+  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
+  box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Secondary Buttons */
+button.bg-gray-100,
+.bg-gray-100 {
+  background: #f8f9fa !important;
+  color: #000000 !important;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+button.bg-gray-100:hover,
+.bg-gray-100:hover {
+  background: #e5e7eb !important;
+  color: #000000 !important;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Outline Buttons */
+button[class*="border-gray"],
+.border-gray-300 {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border: 2px solid #d1d5db;
+  font-weight: 500;
+}
+
+button[class*="border-gray"]:hover,
+.border-gray-300:hover {
+  background: #f9fafb !important;
+  color: #000000 !important;
+  border-color: #9ca3af;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Success/Green Buttons */
+button.bg-green-600,
+.bg-green-600 {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%) !important;
+  color: #ffffff !important;
+  border: none;
+  box-shadow: 0 2px 4px rgba(22, 163, 74, 0.2);
+}
+
+button.bg-green-600:hover,
+.bg-green-600:hover {
+  background: linear-gradient(135deg, #15803d 0%, #166534 100%) !important;
+  box-shadow: 0 4px 8px rgba(22, 163, 74, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Danger/Red Buttons */
+button.bg-red-600,
+.bg-red-600 {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%) !important;
+  color: #ffffff !important;
+  border: none;
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.2);
+}
+
+button.bg-red-600:hover,
+.bg-red-600:hover {
+  background: linear-gradient(135deg, #b91c1c 0%, #991b1b 100%) !important;
+  box-shadow: 0 4px 8px rgba(220, 38, 38, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Button Focus States */
+button:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* Ensure proper contrast in all containers */
+.bg-white {
+  color: #000000 !important; /* Pure black text on white background */
+}
+
+.bg-gray-50 {
+  color: #000000 !important; /* Pure black text on light gray */
+}
+
+.bg-gray-100 {
+  color: #111827 !important; /* Dark text on light gray */
+}
+
+/* Force black text in all white containers */
+.bg-white * {
+  color: #000000 !important;
+}
+
+.bg-gray-50 * {
+  color: #000000 !important;
+}
+
+/* Override any conflicting text colors in boxes */
+div[class*="bg-white"] p,
+div[class*="bg-white"] span,
+div[class*="bg-white"] h1,
+div[class*="bg-white"] h2,
+div[class*="bg-white"] h3,
+div[class*="bg-white"] h4,
+div[class*="bg-white"] h5,
+div[class*="bg-white"] h6,
+div[class*="bg-gray-50"] p,
+div[class*="bg-gray-50"] span,
+div[class*="bg-gray-50"] h1,
+div[class*="bg-gray-50"] h2,
+div[class*="bg-gray-50"] h3,
+div[class*="bg-gray-50"] h4,
+div[class*="bg-gray-50"] h5,
+div[class*="bg-gray-50"] h6 {
+  color: #000000 !important;
+}
+
+/* Status badges with proper contrast */
+.badge {
+  font-weight: 500;
+  border: 1px solid;
+}
+
+/* Table styling with proper contrast */
+table {
+  color: var(--foreground);
+}
+
+th {
+  color: #374151; /* Medium dark for headers */
+  font-weight: 600;
+}
+
+td {
+  color: #111827; /* Dark for table data */
+}
+
+/* Modal and overlay elements */
+.modal-overlay {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+  background-color: var(--card);
+  color: var(--card-foreground);
+}
+
+/* Utility classes for consistent text colors */
+.text-primary {
+  color: var(--primary) !important;
+}
+
+.text-secondary {
+  color: var(--muted-foreground) !important;
+}
+
+.text-muted {
+  color: var(--muted) !important;
+}
+
+/* Loading and disabled states */
+.loading {
+  opacity: 0.7;
+}
+
+.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  :root {
+    --foreground: #000000;
+    --background: #ffffff;
+    --border: #000000;
+  }
+  
+  .bg-white {
+    color: #000000 !important;
+  }
+  
+  button, input, textarea, select {
+    border: 2px solid #000000 !important;
+  }
+}
+
+/* Print styles */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  
+  .bg-white, .bg-gray-50, .bg-gray-100 {
+    color: black !important;
+  }
+}

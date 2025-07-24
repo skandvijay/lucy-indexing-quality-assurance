@@ -1,0 +1,67 @@
+version: '3.8'
+
+# Development overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  indexing-qa:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        - INSTALL_DEV_DEPS=true
+    
+    # Override for development
+    command: /app/start-dev.sh
+    
+    environment:
+      # Development environment settings
+      - FASTAPI_RELOAD=true
+      - FASTAPI_DEBUG=true
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      
+      # Enable verbose logging
+      - LOG_LEVEL=DEBUG
+      - UVICORN_LOG_LEVEL=debug
+      
+      # Development database (optional - use separate dev DB)
+      - DB_PATH=/app/backend/indexing_qa_dev.db
+      
+    volumes:
+      # Mount source code for hot reloading
+      - ./backend:/app/backend:rw
+      - ./frontend:/app/frontend:rw
+      
+      # Persist development database and logs
+      - indexing_qa_dev_data:/app/backend
+      - indexing_qa_dev_logs:/app/logs
+      
+      # Node modules cache (performance optimization)
+      - node_modules_cache:/app/frontend/node_modules
+      
+    ports:
+      # Expose additional ports for debugging
+      - "3000:3000"   # Frontend
+      - "8000:8000"   # Backend API
+      - "9229:9229"   # Node.js debugger (if needed)
+      - "5678:5678"   # Python debugger (if needed)
+    
+    # Remove health check for faster development startup
+    healthcheck:
+      disable: true
+      
+    # Enable debug capabilities
+    cap_add:
+      - SYS_PTRACE
+      
+    # Override restart policy for development
+    restart: "no"
+
+volumes:
+  indexing_qa_dev_data:
+    driver: local
+  indexing_qa_dev_logs:
+    driver: local
+  node_modules_cache:
+    driver: local 
