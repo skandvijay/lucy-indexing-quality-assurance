@@ -78,7 +78,7 @@ graph TB
         UC -.->|Rule Weights| G
         
         subgraph "Storage Layer"
-            N[(SQLite Database)]
+            N[(Database)]
             O[File Storage]
             CR[(Config Rules DB)]
         end
@@ -172,7 +172,7 @@ graph LR
     end
     
     subgraph "Data Layer"
-        M[SQLite Database]
+        M[Database]
         N[File System]
         O[Cache Layer]
     end
@@ -206,19 +206,19 @@ graph LR
 
 Our comprehensive quality framework evaluates content across multiple dimensions:
 
-| Dimension | Description | Weight | Threshold |
+| Dimension | Description | Default Weight | Threshold |
 |-----------|-------------|---------|-----------|
-| **Content Length** | Validates minimum content requirements | 10% | > 50 chars |
-| **Semantic Relevance** | Tags alignment with content | 15% | > 0.15 |
-| **Domain Relevance** | Content relevance to domain | 10% | > 0.1 |
-| **Context Coherence** | Logical content structure | 10% | > 0.1 |
-| **Tag Specificity** | Avoids generic tags | 15% | > 0.8 |
+| **Content Length** | Validates minimum content requirements | 10% | Dynamic |
+| **Semantic Relevance** | Tags alignment with content | 15% | Dynamic |
+| **Domain Relevance** | Content relevance to domain | 10% | Dynamic |
+| **Context Coherence** | Logical content structure | 10% | Dynamic |
+| **Tag Specificity** | Avoids generic tags | 15% | Dynamic |
 | **Content Quality** | Overall content assessment | 20% | Dynamic |
 | **Metadata Completeness** | Required fields validation | 5% | 100% |
 | **Format Compliance** | Structure and formatting | 5% | Pass/Fail |
-| **Duplicate Detection** | Content uniqueness | 5% | < 0.85 similarity |
+| **Duplicate Detection** | Content uniqueness | 5% | Dynamic |
 | **Language Quality** | Grammar and readability | 3% | Dynamic |
-| **Source Reliability** | Connector trust score | 2% | > 0.7 |
+| **Source Reliability** | Connector trust score | 2% | Dynamic |
 
 ### LLM Triggering Logic
 
@@ -774,7 +774,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built with ❤️ by the Indexing QA Team**
+**Built with ❤️ by the Lucy by Capacity Indexing QA Team**
 
 [⬆ Back to Top](#-indexing-qa-pipeline)
 
