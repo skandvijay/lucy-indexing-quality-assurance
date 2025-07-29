@@ -53,15 +53,18 @@ try:
     from app.core.config import get_settings
     from app.services.alerts import AlertManager
     from app.services.schema_validator import SchemaValidator
+    from app.services.dynamic_rules_manager import get_dynamic_rules_manager, initialize_dynamic_rules_manager
     RULES_ENGINE_AVAILABLE = True
     ALERT_MANAGER_AVAILABLE = True
     SCHEMA_VALIDATOR_AVAILABLE = True
-    print("✅ Rules engine, alert manager, and schema validator available")
+    DYNAMIC_RULES_AVAILABLE = True
+    print("✅ Rules engine, alert manager, schema validator, and dynamic rules manager available")
 except ImportError as e:
-    print(f"⚠️  Rules engine not available - using enhanced mock responses: {e}")
+    print(f"⚠️  Services not available - using enhanced mock responses: {e}")
     RULES_ENGINE_AVAILABLE = False
     ALERT_MANAGER_AVAILABLE = False
     SCHEMA_VALIDATOR_AVAILABLE = False
+    DYNAMIC_RULES_AVAILABLE = False
 
 # Check for LLM libraries
 try:
@@ -140,6 +143,16 @@ if SCHEMA_VALIDATOR_AVAILABLE:
     except Exception as e:
         print(f"❌ Failed to initialize schema validator: {e}")
         SCHEMA_VALIDATOR_AVAILABLE = False
+
+# Initialize dynamic rules manager
+rules_manager = None
+if DYNAMIC_RULES_AVAILABLE:
+    try:
+        rules_manager = initialize_dynamic_rules_manager()
+        print("✅ Dynamic Rules Manager initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize Dynamic Rules Manager: {e}")
+        DYNAMIC_RULES_AVAILABLE = False
 
 # Initialize SQLite database for persistent storage - Fixed path to use main database
 DB_PATH = os.path.join(backend_dir, "indexing_qa.db")
@@ -595,7 +608,7 @@ def store_record(record_data: Dict):
         record_data.get('trace_id', ''),
         json.dumps(record_data.get('llm_suggestions', [])),
         record_data.get('llm_reasoning'),
-        record_data.get('status', 'flagged' if record_data.get('quality_score', 0) < 60 else 'approved'),
+        record_data.get('status', 'flagged'),  # Use status as determined by dynamic threshold logic
         record_data.get('manual_review_status', 'pending'),
         json.dumps(record_data.get('issues', []))
     ))
@@ -661,12 +674,12 @@ def get_records_from_db(filters: Dict = None, page: int = 1, page_size: int = 25
                 
                 # Get dynamic approval threshold for fallback
                 try:
-                    approval_threshold = float(settings.approval_quality_score_threshold) if settings else 50.0
+                    approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
                 except (AttributeError, ValueError):
                     approval_threshold = 50.0
                 
                 for status in statuses_list:
-                    # Use real current status from audit trails, fallback to quality score
+                    # Use real current status from audit trails, then actual status field, fallback to quality score
                     condition = f"""(
                         CASE 
                             WHEN manual_review_status IS NOT NULL AND manual_review_status != 'pending' AND 
@@ -678,6 +691,7 @@ def get_records_from_db(filters: Dict = None, page: int = 1, page_size: int = 25
                                     ORDER BY json_extract(value, '$.timestamp') DESC
                                     LIMIT 1
                                 )
+                            WHEN status IS NOT NULL THEN status
                             WHEN CAST(quality_score AS REAL) >= {approval_threshold} THEN 'approved'
                             ELSE 'flagged'
                         END = '{status}'
@@ -1873,7 +1887,7 @@ def analyze_redteam_scenario(scenario_id: str, content: str, tags: List[str], ob
         results["severity_scores"]["over_tagging"] = min(100, tag_ratio * 50)
         if tag_ratio > 0.5:
             results["attack_success"] = True
-    
+            
     elif scenario_id == 'duplicate_content':
         words = content.split()
         unique_words = set(words)
@@ -1925,6 +1939,8 @@ async def health_check():
         "features": ["custom_prompts", "quality_constraints", "redteam_testing"],
         "message": "IndexingQA enhanced local development server is running"
     })
+
+
 
 @app.get("/stats")
 async def get_stats():
@@ -1982,6 +1998,7 @@ async def get_dashboard_metrics():
 @app.post("/ingest")
 async def ingest_content(request: ContentIngestRequest):
     """Ingest content for quality analysis with enhanced LLM suggestions"""
+
     global processed_count, llm_processed_count
     
     start_time = time.time()
@@ -2404,13 +2421,15 @@ async def ingest_content(request: ContentIngestRequest):
         if approval_threshold is None:
             # Fallback to settings
             settings = get_settings()
-            approval_threshold = float(settings.approval_quality_score_threshold)
+            approval_threshold = float(settings.approval_quality_score_threshold) if settings else 50.0
         
         # Determine status using configurable threshold
         if overall_score >= approval_threshold:
             status = "approved"
         else:
             status = "flagged"
+            
+
         
         # Extract issues from failed quality checks
         issues = []
@@ -2824,9 +2843,9 @@ async def get_records(
         # Transform to expected format
         transformed_records = []
         
-        # Get approval threshold from config (same as /ingest endpoint)
+        # Get approval threshold from dynamic system (same as /ingest endpoint)
         settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or float(settings.approval_quality_score_threshold)
         
         for record in records:
             # Get detailed quality checks from database
@@ -2841,7 +2860,7 @@ async def get_records(
             print(f"🔧 DEBUG: record['quality_score']: {record['quality_score']} (type: {type(record['quality_score'])})")
             print(f"🔧 DEBUG: approval_threshold: {approval_threshold} (type: {type(approval_threshold)})")
             print(f"🔧 DEBUG: llm_confidence: {llm_confidence} (type: {type(llm_confidence)})")
-            print(f"🔧 DEBUG: rules_engine_confidence: {rules_engine_confidence} (type: {type(rules_engine_confidence)})")
+            print(f"🔧 DEBUG: rules_engine_confidence: {rules_engine_confidence} (type: {type(rules_engine_confidence)})")            
             # Fetch quality checks from database
             try:
                 conn = sqlite3.connect(DB_PATH)
@@ -2997,10 +3016,10 @@ async def get_records(
                 status_conditions = []
                 
                 # Get dynamic approval threshold for fallback
-                approval_threshold = float(settings.approval_quality_score_threshold)
+                approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
                 
                 for status in statuses_list:
-                    # Use real current status from audit trails, fallback to quality score
+                    # Use real current status from audit trails, then actual status field, fallback to quality score
                     condition = f"""(
                         CASE 
                             WHEN manual_review_status IS NOT NULL AND manual_review_status != 'pending' AND 
@@ -3012,6 +3031,7 @@ async def get_records(
                                     ORDER BY json_extract(value, '$.timestamp') DESC
                                     LIMIT 1
                                 )
+                            WHEN status IS NOT NULL THEN status
                             WHEN CAST(quality_score AS REAL) >= {approval_threshold} THEN 'approved'
                             ELSE 'flagged'
                         END = '{status}'
@@ -3433,39 +3453,42 @@ if UNIFIED_BULK_AVAILABLE:
             config_data = ingestion_configs[config_id]
             
             # Fetch data from external API
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(config_data["api_url"], headers=config_data.get("headers", {})) as response:
-                    if response.status != 200:
-                        raise HTTPException(status_code=response.status, detail="External API request failed")
-                    
-                    data = await response.json()
-                    
-                    # Extract records based on API response format
-                    records = []
-                    if isinstance(data, list):
-                        records = data
-                    elif isinstance(data, dict):
-                        # Handle different response formats
-                        for key in ["data", "items", "records", "results", "hits"]:
-                            if key in data and isinstance(data[key], list):
-                                records = data[key]
-                                break
-                    
-                    if not records:
-                        return {"message": "No records found in API response", "total_fetched": 0}
-                    
-                    # Limit to batch size
-                    batch_size = config_data.get("batch_size", 50)
-                    records = records[:batch_size]
-                    
-                    # Process through unified pipeline
-                    return create_streaming_response(
-                        bulk_processor.process_batch_stream(records, 10, 5)
-                    )
-        
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(config_data["api_url"], headers=config_data.get("headers", {})) as response:
+                        if response.status != 200:
+                            raise HTTPException(status_code=response.status, detail="External API request failed")
+                        
+                        data = await response.json()
+                        
+                        # Extract records based on API response format
+                        records = []
+                        if isinstance(data, list):
+                            records = data
+                        elif isinstance(data, dict):
+                            # Handle different response formats
+                            for key in ["data", "items", "records", "results", "hits"]:
+                                if key in data and isinstance(data[key], list):
+                                    records = data[key]
+                                    break
+                        
+                        if not records:
+                            return {"message": "No records found in API response", "total_fetched": 0}
+                        
+                        # Limit to batch size
+                        batch_size = config_data.get("batch_size", 50)
+                        records = records[:batch_size]
+                        
+                        # Process through unified pipeline
+                        return create_streaming_response(
+                            bulk_processor.process_batch_stream(records, 10, 5)
+                        )
+                        
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"External API fetch failed: {str(e)}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"External API fetch failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to process external API request: {str(e)}")
 
     # Migration helpers - redirect old endpoints to unified ones
     @app.post("/ingest/batch-unified")
@@ -4147,10 +4170,9 @@ async def get_filter_options():
         connector_rows = cursor.fetchall()
         connectors = [{"id": str(i+1), "name": row[0], "count": row[1]} for i, row in enumerate(connector_rows)]
         
-        # Get status counts based on quality scores (using approval threshold)
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
-                
+        # Get status counts based on quality scores (using dynamic approval threshold)
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
+        
         cursor.execute("""
             SELECT 
                 CASE 
@@ -4293,22 +4315,22 @@ async def get_records_filter_options():
         tags = [{"value": tag, "label": tag} for tag, count in sorted_tags]
         
         # Dynamic statuses based on actual current status from audit trails
-        approval_threshold = float(settings.approval_quality_score_threshold) if settings else 50.0
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or (float(settings.approval_quality_score_threshold) if settings else 50.0)
         
         cursor.execute("""
             SELECT 
-                        CASE 
-                            WHEN manual_review_status IS NOT NULL AND manual_review_status != 'pending' AND 
-                                 manual_review_status LIKE '%status_change%' THEN
-                                (
-                                    SELECT json_extract(value, '$.status_change.new')
-                                    FROM json_each(manual_review_status)
-                                    WHERE json_extract(value, '$.status_change') IS NOT NULL
-                                    ORDER BY json_extract(value, '$.timestamp') DESC
-                                    LIMIT 1
-                                )
+                CASE 
+                    WHEN manual_review_status IS NOT NULL AND manual_review_status != 'pending' AND 
+                         manual_review_status LIKE '%status_change%' THEN
+                        (
+                            SELECT json_extract(value, '$.status_change.new')
+                            FROM json_each(manual_review_status)
+                            WHERE json_extract(value, '$.status_change') IS NOT NULL
+                            ORDER BY json_extract(value, '$.timestamp') DESC
+                            LIMIT 1
+                        )
                     WHEN CAST(quality_score AS REAL) >= ? THEN 'approved'
-                            ELSE 'flagged'
+                    ELSE 'flagged'
                 END as current_status, 
                 COUNT(*) as count 
             FROM processed_records 
@@ -4909,302 +4931,40 @@ class ThresholdResponse(BaseModel):
     threshold: Optional[ThresholdConfig] = None
     history: Optional[List[ThresholdHistory]] = None
 
-# Global threshold management
-threshold_history = []
-dynamic_thresholds = {}
-
-def initialize_dynamic_thresholds():
-    """Initialize dynamic thresholds with default values"""
-    global dynamic_thresholds
-    
-    # Get settings for default values
-    settings = get_settings() if 'get_settings' in globals() else None
-    
-    dynamic_thresholds = {
-        # Quality thresholds
-        "quality_pass_rate_threshold": {
-            "current_value": getattr(settings, 'quality_pass_rate_threshold', 95.0),
-            "default_value": 95.0,
-            "min_value": 50.0,
-            "max_value": 100.0,
-            "description": "Minimum percentage of quality checks that must pass for a record to be considered passing",
-            "category": "quality",
-            "unit": "percentage"
-        },
-        "quality_confidence_threshold": {
-            "current_value": getattr(settings, 'quality_confidence_threshold', 0.8),
-            "default_value": 0.8,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum confidence score required for quality checks to pass",
-            "category": "quality",
-            "unit": "score"
-        },
-        "llm_confidence_threshold": {
-            "current_value": getattr(settings, 'llm_confidence_threshold', 0.6),
-            "default_value": 0.6,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum confidence score required for LLM semantic validation to pass",
-            "category": "llm",
-            "unit": "score"
-        },
-        "llm_percentage_threshold": {
-            "current_value": 85.0,  # Default percentage threshold
-            "default_value": 85.0,
-            "min_value": 50.0,
-            "max_value": 100.0,
-            "description": "Minimum percentage of rules that must pass to trigger LLM validation",
-            "category": "llm",
-            "unit": "percentage"
-        },
-        "llm_weighted_threshold": {
-            "current_value": 0.8,  # Default weighted threshold
-            "default_value": 0.8,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Weighted threshold for LLM invocation based on rule importance",
-            "category": "llm",
-            "unit": "score"
-        },
-        # NEW: Range mode thresholds
-        "llm_range_min_threshold": {
-            "current_value": 70.0,  # Default range minimum
-            "default_value": 70.0,
-            "min_value": 0.0,
-            "max_value": 100.0,
-            "description": "Range mode: Below this percentage = auto-reject (no LLM)",
-            "category": "llm",
-            "unit": "percentage"
-        },
-        "llm_range_max_threshold": {
-            "current_value": 80.0,  # Default range maximum
-            "default_value": 80.0,
-            "min_value": 0.0,
-            "max_value": 100.0,
-            "description": "Range mode: Above this percentage = auto-approve (no LLM)",
-            "category": "llm",
-            "unit": "percentage"
-        },
-        # Rules engine thresholds
-        "spam_threshold": {
-            "current_value": getattr(settings, 'spam_threshold', 0.3),
-            "default_value": 0.3,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Threshold for detecting spam content in rules engine",
-            "category": "rules",
-            "unit": "score"
-        },
-        "stopword_threshold": {
-            "current_value": getattr(settings, 'stopword_threshold', 0.5),
-            "default_value": 0.5,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Threshold for detecting excessive stopwords in content",
-            "category": "rules",
-            "unit": "score"
-        },
-        "min_tag_count": {
-            "current_value": getattr(settings, 'min_tag_count', 1),
-            "default_value": 1,
-            "min_value": 0,
-            "max_value": 50,
-            "description": "Minimum number of tags required for content",
-            "category": "rules",
-            "unit": "count"
-        },
-        "max_tag_count": {
-            "current_value": getattr(settings, 'max_tag_count', 20),
-            "default_value": 20,
-            "min_value": 1,
-            "max_value": 100,
-            "description": "Maximum number of tags allowed for content",
-            "category": "rules",
-            "unit": "count"
-        },
-        "tag_text_relevance_threshold": {
-            "current_value": getattr(settings, 'tag_text_relevance_threshold', 0.3),
-            "default_value": 0.3,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum relevance score between tags and text content",
-            "category": "rules",
-            "unit": "score"
-        },
-        "semantic_relevance_threshold": {
-            "current_value": getattr(settings, 'semantic_relevance_threshold', 0.15),  # ✅ Now dynamic
-            "default_value": 0.15,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum semantic similarity score for content validation",
-            "category": "rules",
-            "unit": "score"
-        },
-        "domain_relevance_threshold": {
-            "current_value": getattr(settings, 'domain_relevance_threshold', 0.1),  # ✅ Now dynamic
-            "default_value": 0.1,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum domain relevance score for content validation",
-            "category": "rules",
-            "unit": "score"
-        },
-        "tag_specificity_threshold": {
-            "current_value": getattr(settings, 'tag_specificity_threshold', 0.5),
-            "default_value": 0.5,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum specificity score required for tags",
-            "category": "rules",
-            "unit": "score"
-        },
-        # ✅ Additional Rules Engine Thresholds (Now Dynamic)
-        "min_text_length": {
-            "current_value": getattr(settings, 'min_text_length', 50),
-            "default_value": 50,
-            "min_value": 10,
-            "max_value": 1000,
-            "description": "Minimum text length in characters for content validation",
-            "category": "rules",
-            "unit": "characters"
-        },
-        "max_text_length": {
-            "current_value": getattr(settings, 'max_text_length', 10000),
-            "default_value": 10000,
-            "min_value": 1000,
-            "max_value": 100000,
-            "description": "Maximum text length in characters for content validation",
-            "category": "rules",
-            "unit": "characters"
-        },
-        "min_meaningful_words": {
-            "current_value": getattr(settings, 'min_meaningful_words', 5),
-            "default_value": 5,
-            "min_value": 1,
-            "max_value": 50,
-            "description": "Minimum number of meaningful words required in content",
-            "category": "rules",
-            "unit": "words"
-        },
-        "max_duplicate_content_per_hour": {
-            "current_value": getattr(settings, 'max_duplicate_content_per_hour', 5),
-            "default_value": 5,
-            "min_value": 1,
-            "max_value": 100,
-            "description": "Maximum number of duplicate content items allowed per hour",
-            "category": "rules",
-            "unit": "count"
-        },
-        # ✅ APPROVAL THRESHOLD (MOST IMPORTANT)
-        "approval_quality_score_threshold": {
-            "current_value": getattr(settings, 'approval_quality_score_threshold', 50.0),
-            "default_value": 50.0,
-            "min_value": 0.0,
-            "max_value": 100.0,
-            "description": "Quality score threshold for automatic approval (records >= this score are approved)",
-            "category": "quality",
-            "unit": "percentage"
-        },
-        "context_coherence_threshold": {
-            "current_value": getattr(settings, 'context_coherence_threshold', 0.1),  # ✅ Now dynamic
-            "default_value": 0.1,
-            "min_value": 0.0,
-            "max_value": 1.0,
-            "description": "Minimum coherence score for contextual validation",
-            "category": "rules",
-            "unit": "score"
-        },
-        # Cost management thresholds
-        "cost_budget_daily_limit": {
-            "current_value": getattr(settings, 'cost_budget_daily_limit', 100.0),
-            "default_value": 100.0,
-            "min_value": 0.0,
-            "max_value": 10000.0,
-            "description": "Daily cost budget limit for LLM operations",
-            "category": "cost",
-            "unit": "dollars"
-        },
-        "cost_alert_threshold_percentage": {
-            "current_value": getattr(settings, 'cost_alert_threshold_percentage', 80.0),
-            "default_value": 80.0,
-            "min_value": 0.0,
-            "max_value": 100.0,
-            "description": "Percentage of budget at which to trigger cost alerts",
-            "category": "cost",
-            "unit": "percentage"
-        }
-    }
-
-def update_threshold(threshold_name: str, new_value: float, user_id: str = "admin", reason: Optional[str] = None) -> bool:
-    """Update a threshold value and log the change"""
-    global dynamic_thresholds, threshold_history
-    
-    if threshold_name not in dynamic_thresholds:
-        return False
-    
-    threshold = dynamic_thresholds[threshold_name]
-    old_value = threshold["current_value"]
-    
-    # Validate the new value
-    if new_value < threshold["min_value"] or new_value > threshold["max_value"]:
-        return False
-    
-    # Update the threshold
-    threshold["current_value"] = new_value
-    
-    # Log the change
-    history_entry = ThresholdHistory(
-        threshold_name=threshold_name,
-        old_value=old_value,
-        new_value=new_value,
-        changed_by=user_id,
-        reason=reason,
-        timestamp=datetime.now(UTC).isoformat()
-    )
-    threshold_history.append(history_entry)
-    
-    # Keep only last 100 history entries
-    if len(threshold_history) > 100:
-        threshold_history = threshold_history[-100:]
-    
-    return True
+# Global threshold management - MIGRATED TO UnifiedConfigService
+# All threshold management is now handled by the UnifiedConfigService
+# to eliminate conflicts and ensure single source of truth
 
 def get_threshold_value(threshold_name: str) -> Optional[float]:
-    """Get the current value of a threshold"""
-    if threshold_name in dynamic_thresholds:
-        return dynamic_thresholds[threshold_name]["current_value"]
-    return None
+    """Get the current value of a threshold from the Unified Configuration Service"""
+    try:
+        from ..services.unified_config_service import get_unified_config_service
+        config_service = get_unified_config_service()
+        return config_service.get_threshold(threshold_name)
+    except Exception as e:
+        print(f"Warning: Failed to get threshold {threshold_name}: {e}")
+        # Fallback to config.py directly
+        try:
+            settings = get_settings()
+            return float(getattr(settings, threshold_name, None))
+        except:
+            return None
 
-def reset_threshold_to_default(threshold_name: str, user_id: str = "admin") -> bool:
-    """Reset a threshold to its default value"""
-    if threshold_name not in dynamic_thresholds:
-        return False
-    
-    default_value = dynamic_thresholds[threshold_name]["default_value"]
-    return update_threshold(threshold_name, default_value, user_id, "Reset to default value")
+# Unified threshold management is now handled by UnifiedConfigService
 
-# Initialize dynamic thresholds
-initialize_dynamic_thresholds()
-
-# Dynamic Threshold Management Endpoints
+# Unified Configuration Management Endpoints
 @app.get("/thresholds")
 async def get_all_thresholds():
-    """Get all available thresholds with their current values and configuration"""
+    """Get all available thresholds from the unified configuration service"""
     try:
+        from ..services.unified_config_service import get_unified_config_service
+        config_service = get_unified_config_service()
+        thresholds_data = config_service.get_all_thresholds()
+        
+        # Convert to list format for frontend compatibility
         thresholds = []
-        for name, config in dynamic_thresholds.items():
-            threshold = ThresholdConfig(
-                name=name,
-                current_value=config["current_value"],
-                default_value=config["default_value"],
-                min_value=config["min_value"],
-                max_value=config["max_value"],
-                description=config["description"],
-                category=config["category"],
-                unit=config["unit"]
-            )
-            thresholds.append(threshold)
+        for name, data in thresholds_data.items():
+            thresholds.append(data)
         
         return {
             "success": True,
@@ -5216,28 +4976,27 @@ async def get_all_thresholds():
 
 @app.get("/thresholds/{threshold_name}")
 async def get_threshold(threshold_name: str):
-    """Get a specific threshold configuration"""
+    """Get a specific threshold configuration from unified service"""
     try:
-        if threshold_name not in dynamic_thresholds:
+        from ..services.unified_config_service import get_unified_config_service
+        config_service = get_unified_config_service()
+        
+        value = config_service.get_threshold(threshold_name)
+        if value is None:
             raise HTTPException(status_code=404, detail="Threshold not found")
         
-        config = dynamic_thresholds[threshold_name]
-        threshold = ThresholdConfig(
-            name=threshold_name,
-            current_value=config["current_value"],
-            default_value=config["default_value"],
-            min_value=config["min_value"],
-            max_value=config["max_value"],
-            description=config["description"],
-            category=config["category"],
-            unit=config["unit"]
-        )
+        # Get full threshold data
+        all_thresholds = config_service.get_all_thresholds()
+        if threshold_name not in all_thresholds:
+            raise HTTPException(status_code=404, detail="Threshold metadata not found")
         
-        return ThresholdResponse(
-            success=True,
-            message="Threshold retrieved successfully",
-            threshold=threshold
-        )
+        threshold_data = all_thresholds[threshold_name]
+        
+        return {
+            "success": True,
+            "message": "Threshold retrieved successfully",
+            "threshold": threshold_data
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -5245,58 +5004,50 @@ async def get_threshold(threshold_name: str):
 
 @app.put("/thresholds/{threshold_name}")
 async def update_threshold_endpoint(threshold_name: str, request: ThresholdUpdateRequest):
-    """Update a threshold value dynamically"""
+    """Update a threshold value using the unified configuration service"""
     try:
-        if threshold_name not in dynamic_thresholds:
-            raise HTTPException(status_code=404, detail="Threshold not found")
+        from ..services.unified_config_service import get_unified_config_service, ThresholdUpdate
+        config_service = get_unified_config_service()
         
-        success = update_threshold(
-            threshold_name=threshold_name,
-            new_value=request.new_value,
-            user_id=request.user_id or "admin",
-            reason=request.reason
+        # Use the threshold_name from URL path, ignore the one in request body if present
+        # This maintains backward compatibility while using the REST-style URL
+        actual_threshold_name = threshold_name
+        
+        # Create update request
+        update = ThresholdUpdate(
+            name=actual_threshold_name,
+            value=float(request.new_value),
+            updated_by=request.user_id or "admin",
+            reason=request.reason or "Updated via API"
         )
+        
+        # Update threshold
+        success = config_service.update_threshold(update)
         
         if not success:
-            config = dynamic_thresholds[threshold_name]
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid value. Must be between {config['min_value']} and {config['max_value']}"
-            )
+            raise HTTPException(status_code=400, detail="Failed to update threshold")
         
-        # Get updated threshold config
-        config = dynamic_thresholds[threshold_name]
-        threshold = ThresholdConfig(
-            name=threshold_name,
-            current_value=config["current_value"],
-            default_value=config["default_value"],
-            min_value=config["min_value"],
-            max_value=config["max_value"],
-            description=config["description"],
-            category=config["category"],
-            unit=config["unit"]
-        )
+        # Get updated threshold data
+        updated_value = config_service.get_threshold(actual_threshold_name)
         
-        # ✅ FIX: Notify rules engine to reload thresholds when they change
-        reload_success = False
+        # Notify rules engine to reload thresholds for real-time effect
         try:
             if 'rules_engine' in globals() and rules_engine is not None:
-                print(f"🔄 Triggering rules engine threshold reload for {threshold_name}...")
-                reload_result = rules_engine.reload_thresholds()
-                reload_success = reload_result
-                print(f"✅ Rules engine reload completed: {reload_success}")
-            else:
-                print("⚠️ Rules engine not available for threshold reload")
+                print(f"🔄 Triggering rules engine threshold reload for {actual_threshold_name}...")
+                rules_engine.reload_thresholds()
+                print(f"✅ Rules engine reload completed")
         except Exception as e:
-            print(f"❌ Failed to reload rules engine thresholds: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"⚠️ Failed to reload rules engine thresholds: {e}")
         
-        return ThresholdResponse(
-            success=True,
-            message=f"Threshold '{threshold_name}' updated successfully to {request.new_value}",
-            threshold=threshold
-        )
+        return {
+            "success": True,
+            "message": f"Threshold updated: {actual_threshold_name} = {updated_value}",
+            "threshold": {
+                "name": actual_threshold_name,
+                "current_value": updated_value,
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            }
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -5903,9 +5654,8 @@ class ReviewRequest(BaseModel):
 
 def make_quality_decision(quality_score: float, issues: List[Dict]) -> str:
     """Make binary APPROVED/FLAGGED decision based on quality"""
-    # Get approval threshold from config
-    settings = get_settings()
-    approval_threshold = float(settings.approval_quality_score_threshold)
+    # Get approval threshold from dynamic system
+    approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
     
     critical_issues = [i for i in issues if i.get('severity') == 'critical']
     
@@ -5930,9 +5680,8 @@ async def get_approved_records(
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         # Base query for approved records only
         query = """
@@ -6018,9 +5767,8 @@ async def get_review_queue(priority: Optional[str] = None, assigned_to: Optional
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system  
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         # Get flagged records with issues
         query = """
@@ -6575,9 +6323,8 @@ async def get_quality_control_dashboard():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         # Status distribution
         cursor.execute("""
@@ -6679,9 +6426,8 @@ def update_ingest_endpoint_for_binary_decision():
 async def get_approved_records_endpoint(page: int = 1, pageSize: int = 25):
     """Production Dashboard - Only approved records (score >= config threshold)"""
     try:
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -6690,9 +6436,9 @@ async def get_approved_records_endpoint(page: int = 1, pageSize: int = 25):
         
         cursor.execute("""
             SELECT id, record_id, content, tags, source_connector, 
-                   quality_score, created_at, content_metadata
+                   quality_score, created_at, content_metadata, status
             FROM processed_records 
-            WHERE CAST(quality_score AS REAL) >= ?
+            WHERE (status = 'approved' OR (status IS NULL AND CAST(quality_score AS REAL) >= ?))
             ORDER BY created_at DESC 
             LIMIT ? OFFSET ?
         """, (approval_threshold, pageSize, offset))
@@ -6701,6 +6447,8 @@ async def get_approved_records_endpoint(page: int = 1, pageSize: int = 25):
         
         records = []
         for row in rows:
+            # Use actual status from database, fallback to 'approved' if null (for legacy records)
+            actual_status = row[8] if row[8] is not None else 'approved'
             records.append({
                 'id': row[0],
                 'recordId': row[1],
@@ -6709,10 +6457,10 @@ async def get_approved_records_endpoint(page: int = 1, pageSize: int = 25):
                 'sourceConnector': row[4],
                 'qualityScore': row[5],
                 'createdAt': row[6],
-                'status': 'approved'
+                'status': actual_status
             })
         
-        cursor.execute("SELECT COUNT(*) FROM processed_records WHERE CAST(quality_score AS REAL) >= ?", (approval_threshold,))
+        cursor.execute("SELECT COUNT(*) FROM processed_records WHERE (status = 'approved' OR (status IS NULL AND CAST(quality_score AS REAL) >= ?))", (approval_threshold,))
         total = cursor.fetchone()[0]
         
         conn.close()
@@ -6738,9 +6486,8 @@ async def get_approved_records_endpoint(page: int = 1, pageSize: int = 25):
 async def get_review_queue_endpoint():
     """Review Queue - Flagged records needing review (score < config threshold)"""
     try:
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -6749,7 +6496,7 @@ async def get_review_queue_endpoint():
             SELECT id, record_id, content, tags, source_connector, 
                    quality_score, quality_checks, created_at
             FROM processed_records 
-            WHERE CAST(quality_score AS REAL) < ?
+            WHERE (status = 'flagged' OR (status IS NULL AND CAST(quality_score AS REAL) < ?))
             ORDER BY quality_score ASC, created_at DESC
         """, (approval_threshold,))
         
@@ -6804,9 +6551,8 @@ async def get_review_queue_endpoint():
 async def get_quality_control_dashboard_endpoint():
     """Quality Control Center - Analytics and management overview"""
     try:
-        # Get approval threshold from config
-        settings = get_settings()
-        approval_threshold = float(settings.approval_quality_score_threshold)
+        # Get approval threshold from dynamic system
+        approval_threshold = get_threshold_value("approval_quality_score_threshold") or 50.0
         
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -7584,14 +7330,11 @@ class LLMInvocationDecision(BaseModel):
     rules_summary: Dict[str, Any]
 
 class LLMSimulationRequest(BaseModel):
-    """Request for simulating LLM decision"""
+    """Request for simulating LLM decision - uses dynamic Unified Config values"""
     mode: LLMInvocationMode
-    threshold: float
     sample_input: Dict[str, Any]
-    rule_weights: Optional[Dict[str, float]] = None
-    # NEW: Range mode parameters
-    range_min_threshold: Optional[float] = None
-    range_max_threshold: Optional[float] = None
+    # 🔧 REMOVED hardcoded values: threshold, rule_weights, range thresholds
+    # Backend will get current dynamic values from Unified Config and LLM settings
 
 class LLMSettingsHistory(BaseModel):
     """History record for LLM settings changes"""
@@ -7608,8 +7351,31 @@ class LLMSettingsHistory(BaseModel):
 llm_invocation_settings = LLMInvocationSettings()
 
 def initialize_llm_invocation_settings():
-    """Initialize LLM invocation settings with defaults"""
+    """Initialize LLM invocation settings from UnifiedConfigService - SINGLE SOURCE OF TRUTH"""
     global llm_invocation_settings
+    
+    try:
+        from ..services.unified_config_service import get_unified_config_service
+        config_service = get_unified_config_service()
+        
+        # Get values from UnifiedConfigService (single source of truth)
+        percentage_threshold = config_service.get_threshold("llm_percentage_threshold") or 85.0
+        weighted_threshold = config_service.get_threshold("llm_weighted_threshold") or 0.8
+        range_min_threshold = config_service.get_threshold("llm_range_min_threshold") or 70.0
+        range_max_threshold = config_service.get_threshold("llm_range_max_threshold") or 80.0
+        
+        print(f"🔄 Initializing LLM settings from UnifiedConfigService:")
+        print(f"   percentage_threshold: {percentage_threshold}")
+        print(f"   weighted_threshold: {weighted_threshold}")
+        print(f"   range_min_threshold: {range_min_threshold}")
+        print(f"   range_max_threshold: {range_max_threshold}")
+        
+    except Exception as e:
+        print(f"⚠️  Warning: Could not load from UnifiedConfigService, using defaults: {e}")
+        percentage_threshold = 85.0
+        weighted_threshold = 0.8
+        range_min_threshold = 70.0
+        range_max_threshold = 80.0
     
     # Default rule weights (equal weight for all rules)
     default_weights = {
@@ -7627,11 +7393,11 @@ def initialize_llm_invocation_settings():
     }
     
     llm_invocation_settings = LLMInvocationSettings(
-        mode=LLMInvocationMode.RANGE,  # Changed to RANGE mode for gray-zone triggering
-        percentage_threshold=65.0,  # Reduced from 85.0% to 65% for better pass rate
-        weighted_threshold=0.8,
-        range_min_threshold=70.0,  # Below this: auto-reject
-        range_max_threshold=80.0,  # Above this: auto-approve
+        mode=LLMInvocationMode.RANGE,  # Range mode for gray-zone triggering
+        percentage_threshold=percentage_threshold,  # FROM UNIFIED CONFIG SERVICE
+        weighted_threshold=weighted_threshold,      # FROM UNIFIED CONFIG SERVICE
+        range_min_threshold=range_min_threshold,    # FROM UNIFIED CONFIG SERVICE
+        range_max_threshold=range_max_threshold,    # FROM UNIFIED CONFIG SERVICE
         rule_weights=default_weights,
         created_by="system"
     )
@@ -7870,45 +7636,67 @@ async def update_llm_invocation_mode(request: dict):
 
 @app.patch("/settings/llm-thresholds")
 async def update_llm_thresholds(request: dict):
-    """Update LLM invocation thresholds and sync with dynamic threshold system"""
+    """Update LLM invocation thresholds and sync with UnifiedConfigService"""
     try:
-        global llm_invocation_settings, dynamic_thresholds
+        global llm_invocation_settings
+        from ..services.unified_config_service import get_unified_config_service, ThresholdUpdate
         
         old_settings = llm_invocation_settings.model_copy()
+        config_service = get_unified_config_service()
         
         # Update thresholds
         if "percentage_threshold" in request:
             new_threshold = float(request["percentage_threshold"])
             llm_invocation_settings.percentage_threshold = new_threshold
             
-            # Sync with dynamic threshold system
-            if "llm_percentage_threshold" in dynamic_thresholds:
-                dynamic_thresholds["llm_percentage_threshold"]["current_value"] = new_threshold / 100.0  # Convert to 0-1 scale
+            # Sync with UnifiedConfigService
+            threshold_update = ThresholdUpdate(
+                name="llm_percentage_threshold",
+                value=new_threshold,
+                updated_by=request.get("user_id", "admin"),
+                reason=f"LLM Settings: {request.get('reason', 'Threshold update')}"
+            )
+            config_service.update_threshold(threshold_update)
         
         if "weighted_threshold" in request:
             new_threshold = float(request["weighted_threshold"])
             llm_invocation_settings.weighted_threshold = new_threshold
             
-            # Sync with dynamic threshold system
-            if "llm_weighted_threshold" in dynamic_thresholds:
-                dynamic_thresholds["llm_weighted_threshold"]["current_value"] = new_threshold
+            # Sync with UnifiedConfigService
+            threshold_update = ThresholdUpdate(
+                name="llm_weighted_threshold",
+                value=new_threshold,
+                updated_by=request.get("user_id", "admin"),
+                reason=f"LLM Settings: {request.get('reason', 'Threshold update')}"
+            )
+            config_service.update_threshold(threshold_update)
         
-        # NEW: Range mode threshold support
+        # Range mode threshold support
         if "range_min_threshold" in request:
             new_threshold = float(request["range_min_threshold"])
             llm_invocation_settings.range_min_threshold = new_threshold
             
-            # Sync with dynamic threshold system
-            if "llm_range_min_threshold" in dynamic_thresholds:
-                dynamic_thresholds["llm_range_min_threshold"]["current_value"] = new_threshold
+            # Sync with UnifiedConfigService
+            threshold_update = ThresholdUpdate(
+                name="llm_range_min_threshold",
+                value=new_threshold,
+                updated_by=request.get("user_id", "admin"),
+                reason=f"LLM Settings: {request.get('reason', 'Threshold update')}"
+            )
+            config_service.update_threshold(threshold_update)
         
         if "range_max_threshold" in request:
             new_threshold = float(request["range_max_threshold"])
             llm_invocation_settings.range_max_threshold = new_threshold
             
-            # Sync with dynamic threshold system
-            if "llm_range_max_threshold" in dynamic_thresholds:
-                dynamic_thresholds["llm_range_max_threshold"]["current_value"] = new_threshold
+            # Sync with UnifiedConfigService
+            threshold_update = ThresholdUpdate(
+                name="llm_range_max_threshold",
+                value=new_threshold,
+                updated_by=request.get("user_id", "admin"),
+                reason=f"LLM Settings: {request.get('reason', 'Threshold update')}"
+            )
+            config_service.update_threshold(threshold_update)
         
         if "rule_weights" in request:
             llm_invocation_settings.rule_weights.update(request["rule_weights"])
@@ -7922,20 +7710,7 @@ async def update_llm_thresholds(request: dict):
         # Save to history
         save_llm_settings_history(old_settings, llm_invocation_settings, user_id, reason)
         
-        # Also log threshold changes to dynamic threshold history if applicable
-        if "percentage_threshold" in request and "llm_percentage_threshold" in dynamic_thresholds:
-            try:
-                update_threshold("llm_percentage_threshold", new_threshold / 100.0, user_id, f"LLM Settings: {reason}")
-            except Exception as e:
-                print(f"Warning: Failed to sync percentage threshold to dynamic system: {e}")
-        
-        if "weighted_threshold" in request and "llm_weighted_threshold" in dynamic_thresholds:
-            try:
-                update_threshold("llm_weighted_threshold", new_threshold, user_id, f"LLM Settings: {reason}")
-            except Exception as e:
-                print(f"Warning: Failed to sync weighted threshold to dynamic system: {e}")
-        
-        # ✅ FIX: Notify rules engine to reload thresholds when LLM settings change  
+        # Notify rules engine to reload thresholds when LLM settings change  
         try:
             if 'rules_engine' in globals() and rules_engine is not None:
                 rules_engine.reload_thresholds()
@@ -7944,7 +7719,7 @@ async def update_llm_thresholds(request: dict):
         
         return {
             "success": True,
-            "message": "LLM thresholds updated successfully and synchronized with dynamic threshold system",
+            "message": "LLM thresholds updated successfully and synchronized with UnifiedConfigService",
             "settings": llm_invocation_settings
         }
     except Exception as e:
@@ -7963,15 +7738,29 @@ async def get_rule_weights():
 
 @app.post("/simulate-llm-decision")
 async def simulate_llm_decision(request: LLMSimulationRequest):
-    """Simulate LLM invocation decision for given input and settings"""
+    """Simulate LLM invocation decision using current dynamic Unified Config values"""
     try:
-        # Create temporary settings for simulation
-        temp_settings = LLMInvocationSettings(
+        # 🔧 Get current dynamic LLM settings from Unified Config (no hardcoded values!)
+        from ..services.unified_config_service import get_unified_config_service
+        config_service = get_unified_config_service()
+        
+        # Use current DYNAMIC settings - exactly what actual ingestion uses
+        global llm_invocation_settings
+        current_settings = LLMInvocationSettings(
             mode=request.mode,
-            percentage_threshold=request.threshold if request.mode == LLMInvocationMode.PERCENTAGE else llm_invocation_settings.percentage_threshold,
-            weighted_threshold=request.threshold if request.mode == LLMInvocationMode.WEIGHTED else llm_invocation_settings.weighted_threshold,
-            rule_weights=request.rule_weights or llm_invocation_settings.rule_weights
+            # Get current dynamic thresholds from Unified Config
+            percentage_threshold=config_service.get_threshold("llm_percentage_threshold") or llm_invocation_settings.percentage_threshold,
+            weighted_threshold=config_service.get_threshold("llm_weighted_threshold") or llm_invocation_settings.weighted_threshold,
+            range_min_threshold=config_service.get_threshold("llm_range_min_threshold") or llm_invocation_settings.range_min_threshold,
+            range_max_threshold=config_service.get_threshold("llm_range_max_threshold") or llm_invocation_settings.range_max_threshold,
+            rule_weights=llm_invocation_settings.rule_weights  # Use current dynamic rule weights
         )
+        
+        print(f"🎯 SIMULATION USING DYNAMIC CONFIG:")
+        print(f"   Mode: {current_settings.mode}")
+        print(f"   Percentage threshold: {current_settings.percentage_threshold}")
+        print(f"   Weighted threshold: {current_settings.weighted_threshold}")
+        print(f"   Range: {current_settings.range_min_threshold}-{current_settings.range_max_threshold}")
         
         # Simulate rules engine processing on sample input
         try:
@@ -7989,23 +7778,35 @@ async def simulate_llm_decision(request: LLMSimulationRequest):
             
             chunk_request = ChunkIngestRequest(**validation_result.sanitized_data)
             
-            # Run rules engine
-            rules_engine = RulesEngine()
+            # 🔧 FIX: Use the SAME global rules engine instance as actual ingestion to ensure consistent thresholds
+            global rules_engine
+            if not RULES_ENGINE_AVAILABLE or rules_engine is None:
+                raise Exception("Rules engine not available for simulation")
+            
+            # Use the shared global rules engine to ensure simulation matches actual ingestion
             quality_results = rules_engine.check_chunk(chunk_request)
             
-            # Evaluate LLM decision
-            decision = evaluate_llm_invocation_decision(quality_results, temp_settings)
+            # Log simulation results for debugging threshold consistency
+            passed_rules = sum(1 for result in quality_results if result.status == FlagStatus.PASS)
+            total_rules = len(quality_results)
+            pass_rate = (passed_rules / total_rules * 100) if total_rules > 0 else 0
+            
+            print(f"🔍 SIMULATION DEBUG: Using shared rules engine - {passed_rules}/{total_rules} passed ({pass_rate:.1f}%)")
+            
+            # Evaluate LLM decision using current dynamic settings
+            decision = evaluate_llm_invocation_decision(quality_results, current_settings)
             
             return {
                 "success": True,
                 "decision": decision,
-                "simulation_settings": temp_settings
+                "simulation_settings": current_settings,
+                "note": "Using current dynamic Unified Config values"
             }
             
         except Exception as sim_error:
-            # Fallback simulation with mock data
+            # Fallback simulation with mock data using current dynamic settings
             mock_quality_results = []
-            for rule_name in temp_settings.rule_weights.keys():
+            for rule_name in current_settings.rule_weights.keys():
                 # Create mock results (randomly pass/fail for demonstration)
                 import random
                 status = FlagStatus.PASS if random.random() > 0.3 else FlagStatus.FAIL
@@ -8016,14 +7817,14 @@ async def simulate_llm_decision(request: LLMSimulationRequest):
                 })()
                 mock_quality_results.append(mock_result)
             
-            decision = evaluate_llm_invocation_decision(mock_quality_results, temp_settings)
+            decision = evaluate_llm_invocation_decision(mock_quality_results, current_settings)
             decision.rules_summary["simulation_note"] = f"Mock simulation used due to error: {str(sim_error)}"
             
             return {
                 "success": True,
                 "decision": decision,
-                "simulation_settings": temp_settings,
-                "note": "Mock simulation used - actual rules engine processing failed"
+                "simulation_settings": current_settings,
+                "note": "Mock simulation used with dynamic config - actual rules engine processing failed"
             }
             
     except Exception as e:
@@ -8476,6 +8277,253 @@ async def get_test_record_with_quality_checks(record_id: str):
         ],
         "llmReasoning": "The content is well-structured and provides clear procedural information for employee reimbursements. However, the tagging could be improved to better reflect the specific domain and context of the content."
     }
+
+# =============================================================================
+# DYNAMIC RULES & WEIGHTS MANAGEMENT API ENDPOINTS
+# =============================================================================
+
+class RuleUpdateRequest(BaseModel):
+    """Request model for updating rule properties"""
+    rule_name: str
+    weight: Optional[float] = None
+    enabled: Optional[bool] = None
+    changed_by: str = "admin"
+    reason: str = "Manual update"
+
+class ThresholdUpdateRequestV2(BaseModel):
+    """Enhanced request model for updating thresholds"""
+    threshold_name: str
+    new_value: float
+    changed_by: str = "admin"
+    reason: str = "Manual update"
+
+class BulkRuleUpdateRequest(BaseModel):
+    """Request model for bulk rule updates"""
+    updates: List[RuleUpdateRequest]
+    changed_by: str = "admin"
+    reason: str = "Bulk update"
+
+class BulkThresholdUpdateRequest(BaseModel):
+    """Request model for bulk threshold updates"""
+    updates: List[ThresholdUpdateRequestV2]
+    changed_by: str = "admin"
+    reason: str = "Bulk update"
+
+@app.get("/dynamic-rules/rules")
+async def get_all_dynamic_rules():
+    """Get all quality rules with their current weights and settings"""
+    try:
+        if not rules_manager:
+            raise HTTPException(status_code=503, detail="Dynamic Rules Manager not available")
+        
+        rules = rules_manager.get_all_rules()
+        return {
+            "success": True,
+            "rules": [
+                {
+                    "name": rule.name,
+                    "display_name": rule.display_name,
+                    "description": rule.description,
+                    "category": rule.category.value,
+                    "severity": rule.severity.value,
+                    "weight": rule.weight,
+                    "enabled": rule.enabled,
+                    "threshold_value": rule.threshold_value,
+                    "auto_fixable": rule.auto_fixable,
+                    "updated_at": rule.updated_at.isoformat() if rule.updated_at else None
+                }
+                for rule in rules.values()
+            ],
+            "total_count": len(rules)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get rules: {str(e)}")
+
+@app.put("/dynamic-rules/rules/{rule_name}/weight")
+async def update_rule_weight(rule_name: str, request: RuleUpdateRequest):
+    """Update rule weight in real-time"""
+    try:
+        if not rules_manager:
+            raise HTTPException(status_code=503, detail="Dynamic Rules Manager not available")
+        
+        if request.weight is None:
+            raise HTTPException(status_code=400, detail="Weight value is required")
+        
+        success = rules_manager.update_rule_weight(
+            rule_name=rule_name,
+            new_weight=request.weight,
+            changed_by=request.changed_by,
+            reason=request.reason
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to update rule weight")
+        
+        # Get updated rule
+        rule = rules_manager.get_rule(rule_name)
+        
+        return {
+            "success": True,
+            "message": f"Rule weight updated: {rule_name} = {request.weight}",
+            "rule": {
+                "name": rule.name,
+                "weight": rule.weight,
+                "updated_at": rule.updated_at.isoformat() if rule.updated_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update rule weight: {str(e)}")
+
+@app.get("/dynamic-rules/thresholds")
+async def get_all_dynamic_thresholds():
+    """Get all quality thresholds with their current values"""
+    try:
+        if not rules_manager:
+            raise HTTPException(status_code=503, detail="Dynamic Rules Manager not available")
+        
+        thresholds = rules_manager.get_all_thresholds()
+        return {
+            "success": True,
+            "thresholds": [
+                {
+                    "name": threshold.name,
+                    "display_name": threshold.display_name,
+                    "current_value": threshold.current_value,
+                    "default_value": threshold.default_value,
+                    "min_value": threshold.min_value,
+                    "max_value": threshold.max_value,
+                    "description": threshold.description,
+                    "category": threshold.category,
+                    "unit": threshold.unit,
+                    "affects_rules": threshold.affects_rules,
+                    "updated_at": threshold.updated_at.isoformat() if threshold.updated_at else None
+                }
+                for threshold in thresholds.values()
+            ],
+            "total_count": len(thresholds)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get thresholds: {str(e)}")
+
+@app.put("/dynamic-rules/thresholds/{threshold_name}")
+async def update_dynamic_threshold(threshold_name: str, request: ThresholdUpdateRequestV2):
+    """Update threshold value in real-time"""
+    try:
+        # Get dynamic rules manager directly instead of using global variable
+        dynamic_manager = get_dynamic_rules_manager()
+        
+        success = dynamic_manager.update_threshold_value(
+            threshold_name=threshold_name,
+            new_value=request.new_value,
+            changed_by=request.changed_by,
+            reason=request.reason
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to update threshold")
+        
+        # Get updated threshold
+        threshold = rules_manager.get_threshold(threshold_name)
+        
+        return {
+            "success": True,
+            "message": f"Threshold updated: {threshold_name} = {request.new_value}",
+            "threshold": {
+                "name": threshold.name,
+                "current_value": threshold.current_value,
+                "updated_at": threshold.updated_at.isoformat() if threshold.updated_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update threshold: {str(e)}")
+
+@app.post("/dynamic-rules/rules/bulk-update")
+async def bulk_update_rules(request: BulkRuleUpdateRequest):
+    """Update multiple rules at once"""
+    try:
+        if not rules_manager:
+            raise HTTPException(status_code=503, detail="Dynamic Rules Manager not available")
+        
+        results = {}
+        success_count = 0
+        
+        for update in request.updates:
+            try:
+                if update.weight is not None:
+                    success = rules_manager.update_rule_weight(
+                        rule_name=update.rule_name,
+                        new_weight=update.weight,
+                        changed_by=request.changed_by,
+                        reason=request.reason
+                    )
+                    
+                    if success:
+                        success_count += 1
+                        results[update.rule_name] = {
+                            "success": True,
+                            "weight": update.weight
+                        }
+                    else:
+                        results[update.rule_name] = {
+                            "success": False,
+                            "error": "Failed to update weight"
+                        }
+                        
+            except Exception as e:
+                results[update.rule_name] = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        return {
+            "success": True,
+            "message": f"Updated {success_count}/{len(request.updates)} rules",
+            "results": results,
+            "success_count": success_count,
+            "total_count": len(request.updates)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to bulk update rules: {str(e)}")
+
+@app.get("/dynamic-rules/calculate-weighted-score")
+async def calculate_weighted_score_endpoint(
+    rule_results: str = None  # JSON string of rule results
+):
+    """Calculate weighted quality score based on current rule weights"""
+    try:
+        if not rules_manager:
+            raise HTTPException(status_code=503, detail="Dynamic Rules Manager not available")
+        
+        if not rule_results:
+            raise HTTPException(status_code=400, detail="Rule results are required")
+        
+        import json
+        try:
+            results = json.loads(rule_results)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in rule_results")
+        
+        weighted_score = rules_manager.calculate_weighted_score(results)
+        
+        return {
+            "success": True,
+            "weighted_score": weighted_score,
+            "rule_count": len(results)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calculate weighted score: {str(e)}")
 
 if __name__ == "__main__":
     print(f"""

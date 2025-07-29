@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     azure_tenant_id: Optional[str] = None
     
     # LLM Configuration
-    openai_api_key: str = ""
+    openai_api_key: str = "sk"
     openai_max_tokens: int = 1000
     openai_temperature: float = 0.1
     openai_rate_limit_requests_per_minute: int = 60
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     
     # Quality Thresholds
     quality_pass_rate_threshold: float = 95.0
-    quality_confidence_threshold: float = 0.9
+    quality_confidence_threshold: float = 52.1
     rules_engine_failure_rate_threshold: float = 10.0
     dead_letter_backlog_threshold: int = 100
     
@@ -77,11 +77,25 @@ class Settings(BaseSettings):
     approval_quality_score_threshold: float = 50.0  # Records with quality_score >= this are approved
     
     # Enhanced Quality Engine Thresholds
-    semantic_relevance_threshold: float = 0.4  # Minimum semantic similarity score
-    domain_relevance_threshold: float = 0.4    # Minimum domain relevance score
-    tag_specificity_threshold: float = 0.5     # Minimum tag specificity score
-    context_coherence_threshold: float = 0.3   # Minimum tag coherence score
-    tag_text_relevance_threshold: float = 0.3  # Minimum tag-text relevance score
+    semantic_relevance_threshold: float = 0.8  # Minimum semantic similarity score
+    domain_relevance_threshold: float = 99.3    # Minimum domain relevance score
+    tag_specificity_threshold: float = 100.0     # Minimum tag specificity score
+    context_coherence_threshold: float = 100.0   # Minimum tag coherence score
+    tag_text_relevance_threshold: float = 100.0  # Minimum tag-text relevance score
+    
+    # 🔧 NEW: Dynamic Rule Weights (controllable via frontend Unified Config)
+    # These replace hardcoded values in Dynamic Rules Manager
+    empty_tags_weight: float = 1.0                      # Weight for empty tags validation
+    tag_count_validation_weight: float = 0.8            # Weight for tag count checks
+    text_quality_weight: float = 1.2                    # Weight for text quality validation
+    stopwords_detection_weight: float = 0.6             # Weight for stopwords detection
+    spam_patterns_weight: float = 2.5                   # Weight for spam pattern detection
+    duplicate_content_detection_weight: float = 0.9     # Weight for duplicate content detection
+    tag_text_relevance_weight: float = 1.1              # Weight for tag-text relevance
+    semantic_relevance_weight: float = 2.0              # Weight for semantic relevance
+    domain_relevance_weight: float = 1.0                # Weight for domain relevance
+    tag_specificity_weight: float = 0.8                 # Weight for tag specificity
+    context_coherence_weight: float = 0.9               # Weight for context coherence
     
     # Text Quality Thresholds
     min_text_length: int = 10
@@ -121,8 +135,8 @@ class Settings(BaseSettings):
     # Rules Engine Configuration
     min_tag_count: int = 1
     max_tag_count: int = 20
-    spam_threshold: float = 0.3
-    stopword_threshold: float = 0.5
+    spam_threshold: float = 1.0
+    stopword_threshold: float = 99.7
     rules_engine_batch_size: int = 1000
     rules_engine_max_workers: int = 4
     rules_stopwords_file: str = "stopwords.txt"
@@ -199,6 +213,67 @@ class Settings(BaseSettings):
             "pool_timeout": self.database_pool_timeout,
             "echo": self.debug and not self.is_production
         }
+    
+    # Dynamic Threshold Access Methods (SOLID Architecture - Single Source of Truth)
+    def get_dynamic_threshold(self, threshold_name: str, fallback_value: float = None) -> float:
+        """Get threshold value from UnifiedConfigService with fallback to static value"""
+        try:
+            # Import here to avoid circular imports
+            from ..services.unified_config_service import get_unified_config_service
+            config_service = get_unified_config_service()
+            
+            value = config_service.get_threshold(threshold_name)
+            if value is not None:
+                return value
+                
+        except Exception as e:
+            print(f"Warning: Could not get {threshold_name} from UnifiedConfigService: {e}")
+        
+        # Fallback to static attribute if available
+        if fallback_value is None:
+            fallback_value = getattr(self, threshold_name, None)
+        
+        return fallback_value or 0.0
+    
+    @property
+    def dynamic_approval_quality_score_threshold(self) -> float:
+        """Get approval quality score threshold dynamically"""
+        return self.get_dynamic_threshold("approval_quality_score_threshold", self.approval_quality_score_threshold)
+    
+    @property  
+    def dynamic_semantic_relevance_threshold(self) -> float:
+        """Get semantic relevance threshold dynamically"""
+        return self.get_dynamic_threshold("semantic_relevance_threshold", self.semantic_relevance_threshold)
+    
+    @property
+    def dynamic_domain_relevance_threshold(self) -> float:
+        """Get domain relevance threshold dynamically"""
+        return self.get_dynamic_threshold("domain_relevance_threshold", self.domain_relevance_threshold)
+        
+    @property
+    def dynamic_tag_specificity_threshold(self) -> float:
+        """Get tag specificity threshold dynamically"""
+        return self.get_dynamic_threshold("tag_specificity_threshold", self.tag_specificity_threshold)
+        
+    @property
+    def dynamic_context_coherence_threshold(self) -> float:
+        """Get context coherence threshold dynamically"""
+        return self.get_dynamic_threshold("context_coherence_threshold", self.context_coherence_threshold)
+        
+    @property
+    def dynamic_tag_text_relevance_threshold(self) -> float:
+        """Get tag text relevance threshold dynamically"""
+        return self.get_dynamic_threshold("tag_text_relevance_threshold", self.tag_text_relevance_threshold)
+        
+    @property
+    def dynamic_spam_threshold(self) -> float:
+        """Get spam threshold dynamically"""
+        return self.get_dynamic_threshold("spam_threshold", self.spam_threshold)
+        
+    @property
+    def dynamic_stopword_threshold(self) -> float:
+        """Get stopword threshold dynamically"""  
+        return self.get_dynamic_threshold("stopword_threshold", self.stopword_threshold)
 
 
 @lru_cache()

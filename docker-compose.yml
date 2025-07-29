@@ -2,7 +2,15 @@
 # INDEXING QA PIPELINE - DOCKER COMPOSE CONFIGURATION
 # =============================================================================
 # Production-ready Docker Compose setup for AI Quality Assurance Pipeline
-# Version: 1.0.0
+# Version: 2.0.0 - Now with Unified Config Service & Dynamic Configuration
+#
+# NEW FEATURES:
+# - Unified Config Service: Single source of truth for all configuration
+# - Dynamic Rules Manager: Real-time threshold and weight management
+# - No Hardcoded Values: Everything configurable via frontend UI
+# - LLM Simulation: Test LLM behavior with live configuration
+# - Bidirectional Sync: All config systems stay synchronized
+# - Real-time Updates: Changes apply instantly without restarts
 
 version: '3.8'
 
@@ -30,6 +38,14 @@ services:
       # DATABASE CONFIGURATION
       # =========================================
       - DB_PATH=/app/backend/indexing_qa.db
+      - DYNAMIC_RULES_DB_PATH=/app/backend/dynamic_rules.db
+      
+      # =========================================
+      # UNIFIED CONFIG SERVICE SETTINGS
+      # =========================================
+      - ENABLE_UNIFIED_CONFIG_LOGGING=true
+      - CONFIG_SYNC_ENABLED=true
+      - REAL_TIME_CONFIG_UPDATES=true
       
       # =========================================
       # API SERVER CONFIGURATION
@@ -57,21 +73,43 @@ services:
       - LLM_MAX_RETRIES=3
       
       # =========================================
-      # QUALITY THRESHOLDS (Configurable via UI)
+      # QUALITY THRESHOLDS (Bootstrap values - configurable via Unified Settings UI)
       # =========================================
       - APPROVAL_QUALITY_SCORE_THRESHOLD=50.0
-      - SEMANTIC_RELEVANCE_THRESHOLD=0.15
-      - DOMAIN_RELEVANCE_THRESHOLD=0.1
-      - CONTEXT_COHERENCE_THRESHOLD=0.1
-      - TAG_SPECIFICITY_THRESHOLD=0.8
+      - SEMANTIC_RELEVANCE_THRESHOLD=0.8
+      - DOMAIN_RELEVANCE_THRESHOLD=99.3
+      - CONTEXT_COHERENCE_THRESHOLD=100.0
+      - TAG_SPECIFICITY_THRESHOLD=100.0
+      - TAG_TEXT_RELEVANCE_THRESHOLD=100.0
+      - SPAM_THRESHOLD=0.3
+      - STOPWORD_THRESHOLD=0.5
       
       # =========================================
-      # LLM INVOCATION SETTINGS
+      # DYNAMIC RULE WEIGHTS (Configurable via Unified Settings UI)
       # =========================================
-      - LLM_INVOCATION_MODE=percentage
+      - EMPTY_TAGS_WEIGHT=1.0
+      - TAG_COUNT_VALIDATION_WEIGHT=0.8
+      - TEXT_QUALITY_WEIGHT=1.2
+      - STOPWORDS_DETECTION_WEIGHT=0.6
+      - SPAM_PATTERNS_WEIGHT=2.5
+      - DUPLICATE_CONTENT_DETECTION_WEIGHT=0.9
+      - TAG_TEXT_RELEVANCE_WEIGHT=1.1
+      - SEMANTIC_RELEVANCE_WEIGHT=2.0
+      - DOMAIN_RELEVANCE_WEIGHT=1.0
+      - TAG_SPECIFICITY_WEIGHT=0.8
+      - CONTEXT_COHERENCE_WEIGHT=0.9
+      
+      # =========================================
+      # LLM INVOCATION SETTINGS (Bootstrap values - configurable via Unified Settings UI)
+      # =========================================
+      - LLM_INVOCATION_MODE=range
       - LLM_PERCENTAGE_THRESHOLD=85.0
       - LLM_WEIGHTED_THRESHOLD=0.8
+      - LLM_RANGE_MIN_THRESHOLD=70.0
+      - LLM_RANGE_MAX_THRESHOLD=80.0
+      - LLM_CONFIDENCE_THRESHOLD=0.6
       - LLM_SMART_TRIGGERING=true
+      - LLM_SIMULATION_ENABLED=true
       
       # =========================================
       # EXTERNAL API INGESTION SETTINGS
@@ -138,8 +176,9 @@ services:
     # Labels for monitoring and management
     labels:
       - "com.indexing-qa.service=main"
-      - "com.indexing-qa.version=1.0.0"
+      - "com.indexing-qa.version=2.0.0"
       - "com.indexing-qa.environment=production"
+      - "com.indexing-qa.features=unified-config,dynamic-rules,llm-simulation"
       
       # Traefik labels (if using Traefik reverse proxy)
       - "traefik.enable=true"

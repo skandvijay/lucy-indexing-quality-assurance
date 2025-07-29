@@ -47,15 +47,23 @@ except LookupError:
 
 from ..models.models import ChunkIngestRequest, QualityCheckResult, FlagStatus
 from ..core.config import get_settings
+from .dynamic_rules_manager import get_dynamic_rules_manager, DynamicRulesManager
 
 
 class RulesEngine:
-    """Fast, scalable rules engine for chunk quality validation with enhanced NLP capabilities"""
+    """Fast, scalable rules engine for chunk quality validation with enhanced NLP capabilities and real-time dynamic configuration"""
     
     def __init__(self):
         self.settings = get_settings()
         self.lemmatizer = WordNetLemmatizer()
         self.stop_words = set(stopwords.words('english'))
+        
+        # Initialize dynamic rules manager for real-time configuration
+        self.dynamic_manager = get_dynamic_rules_manager()
+        
+        # Subscribe to configuration changes for real-time updates
+        self.dynamic_manager.subscribe_to_changes(self._on_configuration_change)
+        
         self._load_stopwords()
         self._load_spam_signatures()
         self._load_domain_knowledge()
@@ -64,6 +72,22 @@ class RulesEngine:
         
         # Performance tracking
         self.check_metrics = defaultdict(list)
+    
+    def _on_configuration_change(self, change_type: str, item_name: str, old_value: Any, new_value: Any):
+        """Handle real-time configuration changes"""
+        try:
+            if change_type == "threshold_update":
+                print(f"🔄 Rules Engine: Threshold '{item_name}' updated: {old_value} → {new_value}")
+                # Thresholds are now fetched dynamically, so no action needed
+            elif change_type == "rule_weight_update":
+                print(f"🔄 Rules Engine: Rule weight '{item_name}' updated: {old_value} → {new_value}")
+                # Rule weights are now fetched dynamically, so no action needed
+            
+            # Optional: Clear any cached calculations that depend on these values
+            self.check_metrics.clear()
+            
+        except Exception as e:
+            print(f"❌ Failed to handle configuration change: {e}")
         
     def _load_stopwords(self):
         """Load generic stopwords that shouldn't be primary tags"""
@@ -162,159 +186,47 @@ class RulesEngine:
         }
     
     def _initialize_thresholds(self):
-        """Initialize thresholds from Dynamic Threshold Manager - fully synchronized"""
+        """Initialize thresholds using the new Dynamic Rules Manager"""
         try:
-            # ✅ PRIMARY: Use Dynamic Threshold Manager from api.py (new structure)
-            try:
-                # Try multiple import paths since we're running from different contexts
-                get_threshold_value = None
-                
-                # Method 1: Try relative import from current package
-                try:
-                    from ..api.api import get_threshold_value
-                    print("🔄 Loading thresholds from Dynamic Threshold Manager (..api.api)...")
-                except ImportError:
-                    pass
-                
-                # Method 2: Try absolute import from app.api.api
-                if get_threshold_value is None:
-                    try:
-                        from app.api.api import get_threshold_value
-                        print("🔄 Loading thresholds from Dynamic Threshold Manager (app.api.api)...")
-                    except ImportError:
-                        pass
-                
-                # Method 3: Try direct import from sys.modules if already loaded
-                if get_threshold_value is None:
-                    import sys
-                    for module_name in sys.modules:
-                        if 'api' in module_name and hasattr(sys.modules[module_name], 'get_threshold_value'):
-                            get_threshold_value = getattr(sys.modules[module_name], 'get_threshold_value')
-                            print(f"🔄 Loading thresholds from Dynamic Threshold Manager ({module_name})...")
-                            break
-                
-                # Method 4: Try global scope fallback
-                if get_threshold_value is None:
-                    if hasattr(sys.modules.get('__main__'), 'get_threshold_value'):
-                        get_threshold_value = getattr(sys.modules['__main__'], 'get_threshold_value')
-                        print("🔄 Loading thresholds from Dynamic Threshold Manager (__main__)...")
-                
-                if get_threshold_value is None:
-                    raise ImportError("Cannot import get_threshold_value from any location")
-                
-                # Load ALL thresholds from dynamic system - NO MORE HARDCODED VALUES
-                self.thresholds = {
-                    'min_tag_count': get_threshold_value('min_tag_count') or 1,
-                    'max_tag_count': get_threshold_value('max_tag_count') or 20,
-                    'min_text_length': get_threshold_value('min_text_length') or 50,  # Now dynamic
-                    'max_text_length': get_threshold_value('max_text_length') or 10000,  # Now dynamic
-                    'min_meaningful_words': get_threshold_value('min_meaningful_words') or 5,  # Now dynamic
-                    'stopword_threshold': get_threshold_value('stopword_threshold') or 0.5,
-                    'max_duplicate_content_per_hour': get_threshold_value('max_duplicate_content_per_hour') or 5,  # Now dynamic
-                    'tag_text_relevance_threshold': get_threshold_value('tag_text_relevance_threshold') or 0.3,
-                    # ✅ ALL Semantic thresholds now from dynamic system
-                    'semantic_relevance_threshold': get_threshold_value('semantic_relevance_threshold') or 0.15,
-                    'domain_relevance_threshold': get_threshold_value('domain_relevance_threshold') or 0.1,
-                    'context_coherence_threshold': get_threshold_value('context_coherence_threshold') or 0.1,
-                    'tag_specificity_threshold': get_threshold_value('tag_specificity_threshold') or 0.5,
-                    'spam_threshold': get_threshold_value('spam_threshold') or 0.3
-                }
-                print(f"✅ Loaded thresholds from Dynamic Threshold Manager (api.py): {self.thresholds}")
-                return
-                    
-            except ImportError:
-                print("⚠️  Dynamic Threshold Manager not available from api.py, using default values...")
+            print("🔄 Loading thresholds from Dynamic Rules Manager...")
             
-            # Fallback to config settings (unified config manager not available)
-            # from ..core.config import get_unified_config_manager
+            # The dynamic_manager is now initialized and ready to use
+            # All thresholds are managed dynamically, no local caching needed
+            print("✅ Rules Engine connected to Dynamic Rules Manager for real-time threshold updates")
             
-            # Set default thresholds with proper typing
-            default_thresholds = {
-                'min_tag_count': 1,
-                'max_tag_count': 20,
-                'min_text_length': 50,
-                'max_text_length': 10000,
-                'min_meaningful_words': 5,
-                'stopword_threshold': 0.5,
-                'max_duplicate_content_per_hour': 5,
-                'tag_text_relevance_threshold': 0.3,
-                'semantic_relevance_threshold': 0.15,  # Updated values
-                'domain_relevance_threshold': 0.1,
-                'context_coherence_threshold': 0.1,
-                'tag_specificity_threshold': 0.5,
-                'spam_threshold': 0.3
-            }
-            
-            self.thresholds = {}
-            # Use default values since unified config manager is not available
-            self.thresholds = default_thresholds.copy()
-                    
         except Exception as e:
-            print(f"Warning: Could not load thresholds from any source: {e}")
-            # Ultimate fallback to optimized defaults
-            self.thresholds = {
-                'min_tag_count': 1,
-                'max_tag_count': 20,
-                'min_text_length': 50,
-                'max_text_length': 10000,
-                'min_meaningful_words': 5,
-                'stopword_threshold': 0.5,
-                'max_duplicate_content_per_hour': 5,
-                'tag_text_relevance_threshold': 0.3,
-                'semantic_relevance_threshold': 0.15,  # Optimized values
-                'domain_relevance_threshold': 0.1,
-                'context_coherence_threshold': 0.1,
-                'tag_specificity_threshold': 0.5,
-                'spam_threshold': 0.3
-            }
+            print(f"❌ Failed to initialize thresholds from Dynamic Rules Manager: {e}")
+            # The system will still work because _get_dynamic_threshold has fallbacks
 
     def _get_dynamic_threshold(self, threshold_name: str, fallback_value: float) -> float:
-        """Get the latest dynamic threshold value, with fallback to cached or default value"""
+        """Get the latest dynamic threshold value with UnifiedConfigService fallback"""
         try:
-            # Method 1: Try to get the latest value from api.py dynamic threshold manager
-            from app.api.api import get_threshold_value
-            latest_value = get_threshold_value(threshold_name)
-            if latest_value is not None and latest_value != fallback_value:
-                return latest_value
-        except Exception as e:
-            print(f"Warning: Could not get latest {threshold_name} from api.py: {e}")
-        
-        try:
-            # Method 2: Try to get the latest value from api.py dynamic threshold manager (fallback)
-            from app.api.api import get_threshold_value
-            latest_value = get_threshold_value(threshold_name)
-            if latest_value is not None and latest_value != fallback_value:
-                return latest_value
-        except Exception as e:
-            print(f"Warning: Could not get latest {threshold_name} from api.py fallback: {e}")
-        
-        try:
-            # Method 3: Direct access to dynamic_thresholds from api.py if available
-            from app.api.api import dynamic_thresholds
-            if threshold_name in dynamic_thresholds:
-                latest_value = dynamic_thresholds[threshold_name]["current_value"]
-                if latest_value is not None:
-                    return latest_value
-        except Exception as e:
-            print(f"Warning: Could not access dynamic_thresholds for {threshold_name} from api.py: {e}")
+            # Get threshold from dynamic rules manager
+            threshold = self.dynamic_manager.get_threshold(threshold_name)
+            if threshold is not None:
+                return threshold.current_value
             
-        try:
-            # Method 4: Direct access to dynamic_thresholds from app.api.api if available (fallback)
-            from app.api.api import dynamic_thresholds
-            if threshold_name in dynamic_thresholds:
-                latest_value = dynamic_thresholds[threshold_name]["current_value"]
-                if latest_value is not None:
-                    return latest_value
+            # If not found in thresholds, check if it's a rule with a threshold_value
+            rule = self.dynamic_manager.get_rule(threshold_name)
+            if rule is not None and rule.threshold_value is not None:
+                return rule.threshold_value
+                
         except Exception as e:
-            print(f"Warning: Could not access dynamic_thresholds for {threshold_name} from app.api.api: {e}")
+            print(f"Warning: Could not get {threshold_name} from Dynamic Rules Manager: {e}")
         
-        # Method 5: Fallback to cached value in self.thresholds
-        cached_value = self.thresholds.get(threshold_name)
-        if cached_value is not None:
-            return cached_value
-            
-        # Final fallback to provided default
-        print(f"Warning: Using fallback value {fallback_value} for {threshold_name}")
+        # Fallback to UnifiedConfigService instead of hardcoded values
+        try:
+            from ..services.unified_config_service import get_unified_config_service
+            config_service = get_unified_config_service()
+            unified_value = config_service.get_threshold(threshold_name)
+            if unified_value is not None:
+                print(f"📊 Using UnifiedConfigService fallback for {threshold_name}: {unified_value}")
+                return unified_value
+        except Exception as e:
+            print(f"Warning: Could not get {threshold_name} from UnifiedConfigService: {e}")
+        
+        # Final fallback to provided default only if all else fails
+        print(f"⚠️  Using hardcoded fallback value {fallback_value} for {threshold_name}")
         return fallback_value
     
     def check_chunk(self, chunk: ChunkIngestRequest) -> List[QualityCheckResult]:

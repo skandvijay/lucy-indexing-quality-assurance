@@ -29,13 +29,16 @@ The **Indexing QA Pipeline** is a comprehensive, enterprise-ready quality assura
 ### 🎯 Key Features
 
 - **🤖 Intelligent LLM Integration**: Smart triggering based on quality thresholds with OpenAI and Anthropic support
+- **⚙️ Unified Configuration Service**: Single source of truth for all thresholds, weights, and settings with real-time updates
 - **📊 Comprehensive Analytics**: Real-time dashboards with advanced filtering and visualization
 - **⚡ High-Performance Processing**: Async processing with unified bulk ingestion endpoints
 - **🔍 Multi-Dimensional Quality Analysis**: 11-point quality assessment framework
-- **🛡️ Advanced Rules Engine**: Customizable validation rules with dynamic thresholds
+- **🛡️ Advanced Rules Engine**: Customizable validation rules with dynamic thresholds and weights
+- **🔄 Dynamic Configuration Management**: No hardcoded values - everything configurable via frontend
 - **📈 Real-Time Monitoring**: Live metrics, health checks, and performance tracking
 - **🔄 Unified Ingestion API**: Single endpoint supporting multiple input formats
 - **🎨 Modern UI**: Apple-inspired, enterprise-ready frontend interface
+- **🎯 LLM Decision Simulation**: Test LLM behavior with real-time threshold simulation
 
 ---
 
@@ -64,11 +67,23 @@ graph TB
         M -->|Approve| I
         M -->|Reject| L
         
+        subgraph "Configuration Layer"
+            UC[Unified Config Service]
+            DRM[Dynamic Rules Manager]
+            UC -.->|Real-time Sync| DRM
+        end
+        
+        UC -.->|Dynamic Thresholds| G
+        UC -.->|LLM Settings| J
+        UC -.->|Rule Weights| G
+        
         subgraph "Storage Layer"
             N[(SQLite Database)]
             O[File Storage]
+            CR[(Config Rules DB)]
         end
         
+        DRM --> CR
         I --> N
         L --> N
         O --> N
@@ -77,19 +92,23 @@ graph TB
     subgraph "User Interface"
         P[Dashboard]
         Q[Analytics]
-        R[Settings]
+        R[Unified Settings]
         S[Review Queue]
+        T[LLM Simulation]
     end
     
     N --> P
     N --> Q
-    N --> R
+    UC <-->|Real-time Config| R
     N --> S
+    UC -.->|Live Testing| T
     
     style D fill:#007AFF,color:#fff
     style G fill:#34C759,color:#fff
     style K fill:#FF9500,color:#fff
     style P fill:#5856D6,color:#fff
+    style UC fill:#FF3B30,color:#fff
+    style R fill:#FF9500,color:#fff
 ```
 
 ### Data Flow Architecture
@@ -206,23 +225,50 @@ Our comprehensive quality framework evaluates content across multiple dimensions
 ```python
 def should_trigger_llm(quality_score, mode, thresholds):
     """
-    Smart LLM triggering based on configurable logic
+    Smart LLM triggering with real-time Unified Config integration
     
     Modes:
-    - percentage: Trigger for bottom X% of content
-    - threshold: Trigger below fixed threshold
-    - weighted: Trigger based on weighted score
-    - smart: AI-driven triggering decision
+    - percentage: Trigger for records below X% threshold
+    - weighted: Trigger based on weighted rule scores  
+    - range: Trigger for records in gray zone (min-max range)
+    - threshold: Trigger below fixed threshold (legacy)
+    
+    Features:
+    - Real-time threshold updates via Unified Config Service
+    - Frontend simulation testing with live configuration
+    - No hardcoded values - everything dynamically configurable
+    - Bidirectional sync between config systems
     """
+    # Get current dynamic thresholds from Unified Config
+    from unified_config_service import get_unified_config_service
+    config = get_unified_config_service()
+    
     if mode == "percentage":
-        return quality_score < thresholds.percentage_threshold
-    elif mode == "threshold":
-        return quality_score < thresholds.fixed_threshold
+        threshold = config.get_threshold("llm_percentage_threshold")
+        return quality_score < threshold
     elif mode == "weighted":
-        return calculate_weighted_score(quality_score) < thresholds.weighted_threshold
-    elif mode == "smart":
-        return ai_should_trigger(quality_score, context)
+        threshold = config.get_threshold("llm_weighted_threshold") 
+        weighted_score = calculate_weighted_score(quality_score, config.get_rule_weights())
+        return weighted_score < threshold
+    elif mode == "range":
+        min_threshold = config.get_threshold("llm_range_min_threshold")
+        max_threshold = config.get_threshold("llm_range_max_threshold")
+        return min_threshold <= quality_score <= max_threshold
+    elif mode == "threshold":
+        threshold = config.get_threshold("llm_fixed_threshold")
+        return quality_score < threshold
 ```
+
+### Dynamic Configuration Architecture
+
+The **Unified Config Service** serves as the single source of truth for all system configuration:
+
+- **🔄 Real-time Updates**: Changes via frontend instantly affect processing
+- **🎯 No Hardcoded Values**: Everything configurable from UI
+- **⚖️ Rule Weight Management**: Dynamic rule importance scoring
+- **🔧 Threshold Synchronization**: Bidirectional sync between config systems
+- **🧪 Live Simulation**: Test LLM behavior with current settings
+- **📊 Frontend Integration**: Complete settings management interface
 
 ---
 
@@ -258,8 +304,11 @@ docker-compose up --build -d
 | 🔧 **Backend API** | http://localhost:8000 | FastAPI backend service |
 | 📚 **API Docs** | http://localhost:8000/docs | Interactive API documentation |
 | ❤️ **Health Check** | http://localhost:8000/health | System health status |
-| ⚙️ **Settings** | http://localhost:3000/settings | Configuration management |
+| ⚙️ **Unified Settings** | http://localhost:3000/settings | Complete configuration management interface |
+| 🎯 **LLM Simulation** | http://localhost:3000/settings (Simulation tab) | Real-time LLM behavior testing |
 | 📊 **Analytics** | http://localhost:3000/analytics | Advanced analytics dashboard |
+| 🔍 **Review Queue** | http://localhost:3000/issues | Manual review interface |
+| 📁 **Records** | http://localhost:3000/records | Processed content browser |
 
 ---
 
@@ -310,19 +359,31 @@ npm run dev
 Create a `.env` file in the root directory:
 
 ```bash
-# AI/LLM Configuration (Optional)
+# AI/LLM Configuration (Required for LLM features)
 OPENAI_API_KEY=your_openai_key_here
 ANTHROPIC_API_KEY=your_anthropic_key_here
 
-# Quality Thresholds (Configurable via UI)
+# Initial Quality Thresholds (Will be managed via Unified Config UI)
+# These are bootstrap values - all can be changed via frontend settings
 APPROVAL_QUALITY_SCORE_THRESHOLD=50.0
-SEMANTIC_RELEVANCE_THRESHOLD=0.15
-DOMAIN_RELEVANCE_THRESHOLD=0.1
+SEMANTIC_RELEVANCE_THRESHOLD=0.8
+DOMAIN_RELEVANCE_THRESHOLD=99.3
+TAG_SPECIFICITY_THRESHOLD=100.0
+CONTEXT_COHERENCE_THRESHOLD=100.0
 
-# LLM Invocation Settings
-LLM_INVOCATION_MODE=percentage
+# Initial LLM Invocation Settings (Configurable via UI)
+LLM_INVOCATION_MODE=range
 LLM_PERCENTAGE_THRESHOLD=85.0
 LLM_WEIGHTED_THRESHOLD=0.8
+LLM_RANGE_MIN_THRESHOLD=70.0
+LLM_RANGE_MAX_THRESHOLD=80.0
+
+# Initial Rule Weights (Configurable via Unified Settings)
+EMPTY_TAGS_WEIGHT=1.0
+TEXT_QUALITY_WEIGHT=1.2
+SEMANTIC_RELEVANCE_WEIGHT=2.0
+SPAM_PATTERNS_WEIGHT=2.5
+DOMAIN_RELEVANCE_WEIGHT=1.0
 
 # Performance Settings
 WORKERS=1
@@ -331,11 +392,15 @@ TIMEOUT=30
 
 # Database Configuration
 DB_PATH=backend/indexing_qa.db
+DYNAMIC_RULES_DB_PATH=backend/dynamic_rules.db
 
 # Logging
 LOG_LEVEL=INFO
 ENABLE_REQUEST_LOGGING=true
+ENABLE_UNIFIED_CONFIG_LOGGING=true
 ```
+
+> **💡 Pro Tip**: After startup, use the **Unified Settings** interface at `http://localhost:3000/settings` to configure all thresholds, weights, and LLM settings dynamically. No need to restart the application!
 
 ---
 
@@ -672,11 +737,14 @@ npm run type-check
 
 ### Architecture Deep Dive
 
-- **Rules Engine**: Multi-dimensional quality validation
-- **LLM Integration**: Smart triggering with fallback logic
-- **Unified Ingestion**: Single API for multiple input formats
-- **Real-time Processing**: Async pipeline with WebSocket updates
-- **Analytics Engine**: Comprehensive metrics and filtering
+- **Unified Config Service**: Single source of truth for all configuration with real-time updates and bidirectional synchronization
+- **Dynamic Rules Manager**: Advanced rule and threshold management with persistent storage and live updates
+- **Rules Engine**: Multi-dimensional quality validation with dynamic weights and thresholds
+- **LLM Integration**: Smart triggering with fallback logic and real-time simulation testing
+- **Unified Ingestion**: Single API for multiple input formats with async processing
+- **Real-time Processing**: Async pipeline with WebSocket updates and streaming responses
+- **Analytics Engine**: Comprehensive metrics and filtering with advanced visualization
+- **Configuration Management**: No hardcoded values - everything configurable via modern UI interface
 
 ### Performance Characteristics
 

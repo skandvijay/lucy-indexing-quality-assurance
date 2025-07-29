@@ -2,6 +2,7 @@ version: '3.8'
 
 # Development overrides for docker-compose.yml
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Version: 2.0.0 - Now with Unified Config Service & Dynamic Configuration
 
 services:
   indexing-qa:
@@ -24,9 +25,16 @@ services:
       # Enable verbose logging
       - LOG_LEVEL=DEBUG
       - UVICORN_LOG_LEVEL=debug
+      - ENABLE_UNIFIED_CONFIG_LOGGING=true
       
-      # Development database (optional - use separate dev DB)
+      # Development databases
       - DB_PATH=/app/backend/indexing_qa_dev.db
+      - DYNAMIC_RULES_DB_PATH=/app/backend/dynamic_rules_dev.db
+      
+      # Unified Config Service development settings
+      - CONFIG_SYNC_ENABLED=true
+      - REAL_TIME_CONFIG_UPDATES=true
+      - LLM_SIMULATION_ENABLED=true
       
     volumes:
       # Mount source code for hot reloading
