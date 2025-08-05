@@ -43,6 +43,7 @@ import {
   Building,
   GitBranch,
   Tag,
+  FileText,
   Download,
   Eye,
   ArrowUpRight,
@@ -95,6 +96,14 @@ interface AdvancedAnalyticsData {
     severity: 'critical' | 'high' | 'medium' | 'low'
     affectedCompanies: number
   }>
+  fileTypeData?: Array<{
+    fileType: string
+    count: number
+    avgQuality: number
+    issues: number
+    successRate: number
+    color: string
+  }>
 }
 
 export default function AdvancedAnalyticsPage() {
@@ -102,12 +111,14 @@ export default function AdvancedAnalyticsPage() {
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d')
   const [selectedCompanies, setSelectedCompanies] = useState<string[]>([])
   const [selectedConnectors, setSelectedConnectors] = useState<string[]>([])
-  const [selectedView, setSelectedView] = useState<'overview' | 'companies' | 'connectors' | 'tags' | 'quality'>('overview')
+  const [selectedFileTypes, setSelectedFileTypes] = useState<string[]>([])
+  const [selectedView, setSelectedView] = useState<'overview' | 'companies' | 'connectors' | 'tags' | 'quality' | 'filetypes'>('overview')
   const [analyticsData, setAnalyticsData] = useState<AdvancedAnalyticsData | null>(null)
   const [filterOptions, setFilterOptions] = useState<{
     companies: Array<{value: string, label: string, count: number}>
     connectors: Array<{value: string, label: string, count: number}>
-  }>({ companies: [], connectors: [] })
+    fileTypes: Array<{value: string, label: string, count: number}>
+  }>({ companies: [], connectors: [], fileTypes: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -132,7 +143,8 @@ export default function AdvancedAnalyticsPage() {
       const options = await apiClient.getFilterOptions()
       setFilterOptions({
         companies: options.companies || [],
-        connectors: options.connectors || []
+        connectors: options.connectors || [],
+        fileTypes: options.fileTypes || []
       })
     } catch (err) {
       console.error('Error fetching filter options:', err)
@@ -144,7 +156,69 @@ export default function AdvancedAnalyticsPage() {
       setLoading(true)
       setError(null)
 
-      // Get analytics data and records with proper filtering
+      // Define file type extraction function first
+      const extractFileTypeFromMetadata = (contentMetadata: string, sourceConnector: string = '') => {
+        try {
+          if (contentMetadata) {
+            const metadata = typeof contentMetadata === 'string' ? JSON.parse(contentMetadata) : contentMetadata
+            
+            // Check for direct file_type field
+            if (metadata.file_type) {
+              return metadata.file_type.toLowerCase()
+            }
+            
+            // Extract from filename or file path
+            const filename = metadata.filename || metadata.file_name || metadata.title || ''
+            if (filename.includes('.')) {
+              const ext = filename.split('.').pop()?.toLowerCase() || ''
+              const fileTypeMap: { [key: string]: string } = {
+                'pdf': 'PDF Document',
+                'docx': 'Microsoft Word',
+                'doc': 'Microsoft Word',
+                'pptx': 'Microsoft PowerPoint',
+                'ppt': 'Microsoft PowerPoint',
+                'xlsx': 'Microsoft Excel',
+                'xls': 'Microsoft Excel',
+                'txt': 'Text Document',
+                'html': 'Web Content',
+                'htm': 'Web Content',
+                'csv': 'CSV Data',
+                'json': 'JSON Data',
+                'xml': 'XML Document'
+              }
+              return fileTypeMap[ext] || 'Unknown Type'
+            }
+            
+            // Check for document type indicators
+            const docType = metadata.document_type || metadata.content_type || ''
+            if (docType) {
+              if (docType.toLowerCase().includes('pdf')) return 'PDF Document'
+              if (docType.toLowerCase().includes('word') || docType.toLowerCase().includes('docx')) return 'Microsoft Word'
+              if (docType.toLowerCase().includes('excel') || docType.toLowerCase().includes('xlsx')) return 'Microsoft Excel'
+              if (docType.toLowerCase().includes('powerpoint') || docType.toLowerCase().includes('pptx')) return 'Microsoft PowerPoint'
+            }
+          }
+          
+          // Infer from source connector
+          const sourceMapping: { [key: string]: string } = {
+            'sharepoint': 'Microsoft Word',
+            'confluence': 'Web Content',
+            'notion': 'Web Content',
+            'jira': 'Web Content',
+            'gdrive': 'Microsoft Word'
+          }
+          
+          return sourceMapping[sourceConnector.toLowerCase()] || 'Unknown Type'
+          
+        } catch (error) {
+          return 'Unknown Type'
+        }
+      }
+
+      // Get backend analytics data (includes fileTypeData)
+      const analyticsResponse = await apiClient.getDashboardAnalytics()
+
+      // Get analytics data and records with proper filtering (no fileTypes in backend API)
       const recordsResponse = await apiClient.getQualityRecords(
         {
           companies: selectedCompanies.length > 0 ? selectedCompanies : undefined,
@@ -154,7 +228,58 @@ export default function AdvancedAnalyticsPage() {
       )
 
       // Process the data for advanced analytics
-      const records = recordsResponse.data || []
+      let records = recordsResponse.data || []
+
+      // Apply client-side file type filtering if specific file types are selected
+      if (selectedFileTypes.length > 0) {
+        records = records.filter((record: any) => {
+          const fileType = extractFileTypeFromMetadata(
+            JSON.stringify(record.metadata || {}), 
+            record.sourceConnectorName || record.sourceConnectorType || ''
+          )
+          return selectedFileTypes.includes(fileType)
+        })
+      }
+
+      // Calculate filtered file type data
+      const fileTypeStats: { [key: string]: { count: number, totalQuality: number, issues: number, successCount: number } } = {}
+      
+      records.forEach((record: any) => {
+        const fileType = extractFileTypeFromMetadata(
+          JSON.stringify(record.metadata || {}), 
+          record.sourceConnectorName || record.sourceConnectorType || ''
+        )
+        
+        if (!fileTypeStats[fileType]) {
+          fileTypeStats[fileType] = { count: 0, totalQuality: 0, issues: 0, successCount: 0 }
+        }
+        
+        fileTypeStats[fileType].count++
+        fileTypeStats[fileType].totalQuality += record.qualityScore || 0
+        
+        if (record.status === 'flagged' || record.status === 'under_review') {
+          fileTypeStats[fileType].issues++
+        }
+        
+        if (record.status === 'approved') {
+          fileTypeStats[fileType].successCount++
+        }
+      })
+
+      // Convert to file type data format with Apple colors
+      const appleColors = [
+        '#007AFF', '#34C759', '#FF9500', '#FF3B30', 
+        '#5856D6', '#FF2D92', '#64D2FF', '#32D74B'
+      ]
+      
+      const filteredFileTypeData = Object.entries(fileTypeStats).map(([fileType, stats], index) => ({
+        fileType,
+        count: stats.count,
+        avgQuality: stats.count > 0 ? Math.round((stats.totalQuality / stats.count) * 10) / 10 : 0,
+        issues: stats.issues,
+        successRate: stats.count > 0 ? Math.round((stats.successCount / stats.count) * 1000) / 10 : 0,
+        color: appleColors[index % appleColors.length]
+      })).sort((a, b) => b.count - a.count)
       
       // Generate quality trend data with real data processing
       const trendData = []
@@ -320,7 +445,8 @@ export default function AdvancedAnalyticsPage() {
         connectorBreakdown,
         tagAnalytics,
         qualityDistribution,
-        topIssues
+        topIssues,
+        fileTypeData: filteredFileTypeData
       })
 
     } catch (err) {
@@ -333,7 +459,8 @@ export default function AdvancedAnalyticsPage() {
         connectorBreakdown: [],
         tagAnalytics: [],
         qualityDistribution: [],
-        topIssues: []
+        topIssues: [],
+        fileTypeData: []
       })
     } finally {
       setLoading(false)
@@ -346,7 +473,7 @@ export default function AdvancedAnalyticsPage() {
 
   useEffect(() => {
     fetchAdvancedAnalytics()
-  }, [timeRange, selectedCompanies, selectedConnectors])
+  }, [timeRange, selectedCompanies, selectedConnectors, selectedFileTypes])
 
   // Modern metric card component
   const MetricCard = ({ 
@@ -653,6 +780,16 @@ export default function AdvancedAnalyticsPage() {
                   options={filterOptions.connectors}
                   placeholder="All Connectors"
                 />
+
+                {/* File Type Filter */}
+                <MultiSelectFilter
+                  label="File Types"
+                  icon={FileText}
+                  value={selectedFileTypes}
+                  onChange={setSelectedFileTypes}
+                  options={filterOptions.fileTypes}
+                  placeholder="All File Types"
+                />
               </div>
             </div>
           </div>
@@ -664,7 +801,8 @@ export default function AdvancedAnalyticsPage() {
               { key: 'companies', label: 'Companies', icon: Building },
               { key: 'connectors', label: 'Connectors', icon: GitBranch },
               { key: 'tags', label: 'Tags', icon: Tag },
-              { key: 'quality', label: 'Quality', icon: Target }
+              { key: 'quality', label: 'Quality', icon: Target },
+              { key: 'filetypes', label: 'File Types', icon: FileText }
             ].map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
@@ -1019,6 +1157,334 @@ export default function AdvancedAnalyticsPage() {
                   </tr>
                 ))}
               />
+            </div>
+          )}
+
+          {selectedView === 'filetypes' && (
+            <div className="space-y-8">
+              {/* Enterprise File Type Insights */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Modern Donut Chart */}
+                <div className="lg:col-span-2">
+                  <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8">
+                    <div className="flex items-center justify-between mb-8">
+                      <div>
+                        <h3 className="text-2xl font-bold text-gray-900 mb-2">File Type Distribution</h3>
+                        <p className="text-gray-600">Document format breakdown across your knowledge base</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                        Total: {analyticsData?.fileTypeData?.reduce((sum, item) => sum + item.count, 0) || 0} documents
+                      </div>
+                    </div>
+
+                    <div className="relative">
+                      <ResponsiveContainer width="100%" height={350}>
+                        <PieChart>
+                          <Pie
+                            data={analyticsData?.fileTypeData || []}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={70}
+                            outerRadius={140}
+                            paddingAngle={4}
+                            dataKey="count"
+                          >
+                            {(analyticsData?.fileTypeData || []).map((entry, index) => {
+                              const appleColors = [
+                                '#007AFF', // Blue
+                                '#34C759', // Green  
+                                '#FF9500', // Orange
+                                '#FF3B30', // Red
+                                '#5856D6', // Purple
+                                '#FF2D92', // Pink
+                                '#64D2FF', // Light Blue
+                                '#32D74B'  // Light Green
+                              ];
+                              return (
+                                <Cell 
+                                  key={`cell-${index}`} 
+                                  fill={appleColors[index % appleColors.length]}
+                                  stroke="white"
+                                  strokeWidth={3}
+                                />
+                              )
+                            })}
+                          </Pie>
+                          <Tooltip 
+                            contentStyle={{ 
+                              backgroundColor: 'rgba(255, 255, 255, 0.98)', 
+                              border: 'none', 
+                              borderRadius: '16px', 
+                              boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
+                              backdropFilter: 'blur(20px)'
+                            }}
+                            content={({ active, payload }) => {
+                              if (active && payload && payload.length) {
+                                const data = payload[0].payload;
+                                const total = analyticsData?.fileTypeData?.reduce((sum, item) => sum + item.count, 0) || 1;
+                                const percentage = ((data.count / total) * 100).toFixed(1);
+                                return (
+                                  <div className="bg-white/95 backdrop-blur-xl p-4 border border-gray-100 rounded-2xl shadow-xl">
+                                    <div className="flex items-center gap-3 mb-3">
+                                      <div 
+                                        className="w-4 h-4 rounded-full"
+                                        style={{ backgroundColor: payload[0].fill }}
+                                      ></div>
+                                      <p className="font-semibold text-gray-900">{data.fileType}</p>
+                                    </div>
+                                    <div className="space-y-2 text-sm">
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-gray-600">Documents:</span>
+                                        <span className="font-semibold">{data.count.toLocaleString()}</span>
+                                      </div>
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-gray-600">Percentage:</span>
+                                        <span className="font-semibold">{percentage}%</span>
+                                      </div>
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-gray-600">Avg Quality:</span>
+                                        <span className="font-semibold">{data.avgQuality}%</span>
+                                      </div>
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-gray-600">Success Rate:</span>
+                                        <span className={`font-semibold ${
+                                          data.successRate >= 90 ? 'text-green-600' :
+                                          data.successRate >= 80 ? 'text-yellow-600' :
+                                          'text-red-600'
+                                        }`}>{data.successRate}%</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            }}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+
+                      {/* Center Label */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="text-center">
+                          <div className="text-3xl font-bold text-gray-900">
+                            {analyticsData?.fileTypeData?.length || 0}
+                          </div>
+                          <div className="text-sm text-gray-500 font-medium">File Types</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modern Legend & Insights */}
+                <div className="space-y-6">
+                  {/* Custom Legend */}
+                  <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
+                    <h4 className="text-lg font-bold text-gray-900 mb-4">File Types</h4>
+                    <div className="space-y-4">
+                      {(analyticsData?.fileTypeData || []).map((item, index) => {
+                        const appleColors = [
+                          '#007AFF', '#34C759', '#FF9500', '#FF3B30', 
+                          '#5856D6', '#FF2D92', '#64D2FF', '#32D74B'
+                        ];
+                        const total = analyticsData?.fileTypeData?.reduce((sum, i) => sum + i.count, 0) || 1;
+                        const percentage = ((item.count / total) * 100).toFixed(1);
+                        
+                        return (
+                          <div key={item.fileType} className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div 
+                                className="w-4 h-4 rounded-full shadow-sm"
+                                style={{ backgroundColor: appleColors[index % appleColors.length] }}
+                              ></div>
+                              <div>
+                                <div className="font-semibold text-gray-900 text-sm">{item.fileType}</div>
+                                <div className="text-xs text-gray-500">{item.count.toLocaleString()} documents</div>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="font-bold text-gray-900 text-sm">{percentage}%</div>
+                              <div className="text-xs text-gray-500">{item.avgQuality}% quality</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Quality Insights */}
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-3xl border border-blue-100 p-6">
+                    <h4 className="text-lg font-bold text-gray-900 mb-4">Quality Insights</h4>
+                    <div className="space-y-3">
+                                             {(() => {
+                         const fileTypes = analyticsData?.fileTypeData || [];
+                         if (fileTypes.length === 0) return null;
+                         
+                         const bestType = fileTypes.reduce((best, current) => 
+                           current.avgQuality > best.avgQuality ? current : best);
+                         const worstType = fileTypes.reduce((worst, current) => 
+                           current.avgQuality < worst.avgQuality ? current : worst);
+                         
+                         return (
+                           <>
+                             {bestType && (
+                              <div className="flex items-center gap-3 p-3 bg-white/60 rounded-xl">
+                                <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
+                                  <CheckCircle className="w-4 h-4 text-green-600" />
+                                </div>
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-900">Best Performing</div>
+                                  <div className="text-xs text-gray-600">{bestType.fileType} - {bestType.avgQuality}% avg quality</div>
+                                </div>
+                              </div>
+                            )}
+                            {worstType && (
+                              <div className="flex items-center gap-3 p-3 bg-white/60 rounded-xl">
+                                <div className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center">
+                                  <AlertTriangle className="w-4 h-4 text-orange-600" />
+                                </div>
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-900">Needs Attention</div>
+                                  <div className="text-xs text-gray-600">{worstType.fileType} - {worstType.avgQuality}% avg quality</div>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Enhanced Performance Table */}
+              <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-8 py-6 border-b border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">File Type Performance Analytics</h3>
+                      <p className="text-gray-600 mt-1">Detailed quality metrics and processing insights</p>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <Database className="w-4 h-4" />
+                      Enterprise Analytics
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50/50">
+                      <tr>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">File Type</th>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Volume</th>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Quality Score</th>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Success Rate</th>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Issues</th>
+                        <th className="px-8 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Health</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {(analyticsData?.fileTypeData || []).map((fileType, index) => {
+                        const appleColors = [
+                          '#007AFF', '#34C759', '#FF9500', '#FF3B30', 
+                          '#5856D6', '#FF2D92', '#64D2FF', '#32D74B'
+                        ];
+                        const total = analyticsData?.fileTypeData?.reduce((sum, item) => sum + item.count, 0) || 1;
+                        const percentage = ((fileType.count / total) * 100).toFixed(1);
+                        
+                        return (
+                          <tr key={fileType.fileType} className="hover:bg-gray-50/30 transition-all duration-200">
+                            <td className="px-8 py-6">
+                              <div className="flex items-center gap-4">
+                                <div 
+                                  className="w-6 h-6 rounded-lg shadow-sm flex items-center justify-center"
+                                  style={{ backgroundColor: `${appleColors[index % appleColors.length]}15` }}
+                                >
+                                  <div 
+                                    className="w-3 h-3 rounded-full"
+                                    style={{ backgroundColor: appleColors[index % appleColors.length] }}
+                                  ></div>
+                                </div>
+                                <div>
+                                  <div className="font-bold text-gray-900">{fileType.fileType}</div>
+                                  <div className="text-sm text-gray-500">{percentage}% of total</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <div className="flex items-center gap-3">
+                                <div className="text-xl font-bold text-gray-900">{fileType.count.toLocaleString()}</div>
+                                <div className="text-sm text-gray-500">documents</div>
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <div className="flex items-center gap-3">
+                                <div className="text-lg font-bold text-gray-900">{fileType.avgQuality}%</div>
+                                <div className={`w-12 h-2 rounded-full ${
+                                  fileType.avgQuality >= 80 ? 'bg-green-200' :
+                                  fileType.avgQuality >= 60 ? 'bg-yellow-200' : 'bg-red-200'
+                                }`}>
+                                  <div 
+                                    className={`h-2 rounded-full ${
+                                      fileType.avgQuality >= 80 ? 'bg-green-500' :
+                                      fileType.avgQuality >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+                                    }`}
+                                    style={{ width: `${fileType.avgQuality}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${
+                                fileType.successRate >= 90 ? 'bg-green-100 text-green-800' :
+                                fileType.successRate >= 80 ? 'bg-yellow-100 text-yellow-800' :
+                                'bg-red-100 text-red-800'
+                              }`}>
+                                {fileType.successRate >= 90 ? <CheckCircle className="w-4 h-4" /> :
+                                 fileType.successRate >= 80 ? <Clock className="w-4 h-4" /> :
+                                 <XCircle className="w-4 h-4" />}
+                                {fileType.successRate}%
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <div className="flex items-center gap-2">
+                                <span className="text-lg font-bold text-gray-900">{fileType.issues}</span>
+                                <span className="text-sm text-gray-500">issues</span>
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <div className={`flex items-center gap-2 ${
+                                fileType.successRate >= 90 && fileType.avgQuality >= 80 ? 'text-green-600' :
+                                fileType.successRate >= 80 && fileType.avgQuality >= 60 ? 'text-yellow-600' :
+                                'text-red-600'
+                              }`}>
+                                {fileType.successRate >= 90 && fileType.avgQuality >= 80 ? (
+                                  <>
+                                    <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                                    <span className="text-sm font-semibold">Excellent</span>
+                                  </>
+                                ) : fileType.successRate >= 80 && fileType.avgQuality >= 60 ? (
+                                  <>
+                                    <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
+                                    <span className="text-sm font-semibold">Good</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                                    <span className="text-sm font-semibold">Needs Work</span>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
 

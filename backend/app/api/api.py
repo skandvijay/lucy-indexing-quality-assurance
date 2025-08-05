@@ -642,6 +642,650 @@ def store_dead_letter(trace_id: str, raw_input: str, error_message: str, error_t
     conn.commit()
     conn.close()
 
+#!/usr/bin/env python3
+"""
+IndexingQA Local Development Server
+Enhanced with custom LLM prompts, constraints, and red-team testing
+"""
+
+
+# Path setup for direct execution
+import sys
+import os
+
+# Add the backend directory to Python path if not already present
+current_dir = os.path.dirname(os.path.abspath(__file__))
+backend_dir = os.path.dirname(os.path.dirname(current_dir))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+    print(f"📁 Added {backend_dir} to Python path")
+import json
+import time
+import uuid
+import re
+import os
+from datetime import datetime, UTC, timedelta
+from typing import Dict, List, Optional, Any, Union
+from enum import Enum
+from dataclasses import dataclass, asdict
+from collections import defaultdict
+import sqlite3
+import threading
+from fastapi import Body, File, UploadFile
+
+from fastapi import FastAPI, HTTPException, Request, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field
+import uvicorn
+import aiohttp
+
+# Import unified bulk processor
+try:
+    from .unified_bulk_ingest import bulk_processor, extract_records_from_upload, create_streaming_response
+    UNIFIED_BULK_AVAILABLE = True
+    print("✅ Unified bulk processor available")
+except ImportError as e:
+    print(f"⚠️  Unified bulk processor not available: {e}")
+    UNIFIED_BULK_AVAILABLE = False
+
+# Import our rules engine
+try:
+    from app.services.rules_engine import RulesEngine
+    from app.models.models import ChunkIngestRequest, QualityCheckResult, FlagStatus, SourceConnector
+    from app.core.config import get_settings
+    from app.services.alerts import AlertManager
+    from app.services.schema_validator import SchemaValidator
+    from app.services.dynamic_rules_manager import get_dynamic_rules_manager, initialize_dynamic_rules_manager
+    RULES_ENGINE_AVAILABLE = True
+    ALERT_MANAGER_AVAILABLE = True
+    SCHEMA_VALIDATOR_AVAILABLE = True
+    DYNAMIC_RULES_AVAILABLE = True
+    print("✅ Rules engine, alert manager, schema validator, and dynamic rules manager available")
+except ImportError as e:
+    print(f"⚠️  Services not available - using enhanced mock responses: {e}")
+    RULES_ENGINE_AVAILABLE = False
+    ALERT_MANAGER_AVAILABLE = False
+    SCHEMA_VALIDATOR_AVAILABLE = False
+    DYNAMIC_RULES_AVAILABLE = False
+
+# Check for LLM libraries
+try:
+    import openai
+    LLM_AVAILABLE = True
+    print("✅ OpenAI library available")
+except ImportError:
+    LLM_AVAILABLE = False
+    print("⚠️  OpenAI library not available - using fallback mode")
+
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+    print("✅ Anthropic library available")
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    print("⚠️  Anthropic library not available")
+
+# Initialize global variables
+processed_records = []
+processed_count = 0
+llm_processed_count = 0
+redteam_results = []
+start_time = datetime.now(UTC)
+evaluation_metrics = {
+    'total_analyses': 0,
+    'methodology_performance': defaultdict(list),
+    'user_feedback': []
+}
+
+# Initialize settings
+settings = None
+if RULES_ENGINE_AVAILABLE:
+    try:
+        settings = get_settings()
+    except Exception as e:
+        print(f"⚠️ Warning: Could not load settings: {e}")
+        settings = None
+
+# Initialize rules engine if available
+rules_engine = None
+alert_manager = None
+llm_judge = None
+
+if RULES_ENGINE_AVAILABLE:
+    try:
+        rules_engine = RulesEngine()
+        print("✅ Rules engine initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize rules engine: {e}")
+        RULES_ENGINE_AVAILABLE = False
+
+if ALERT_MANAGER_AVAILABLE:
+    try:
+        alert_manager = AlertManager()
+        print("✅ Alert manager initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize alert manager: {e}")
+        ALERT_MANAGER_AVAILABLE = False
+
+# Initialize LLM judge for semantic validation
+try:
+    from app.services.llm_judge import LLMJudge
+    llm_judge = LLMJudge()
+    print("✅ LLM judge initialized successfully")
+except Exception as e:
+    print(f"❌ Failed to initialize LLM judge: {e}")
+    llm_judge = None
+
+# Initialize schema validator
+schema_validator = None
+if SCHEMA_VALIDATOR_AVAILABLE:
+    try:
+        schema_validator = SchemaValidator()
+        print("✅ Schema validator initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize schema validator: {e}")
+        SCHEMA_VALIDATOR_AVAILABLE = False
+
+# Initialize dynamic rules manager
+rules_manager = None
+if DYNAMIC_RULES_AVAILABLE:
+    try:
+        rules_manager = initialize_dynamic_rules_manager()
+        print("✅ Dynamic Rules Manager initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize Dynamic Rules Manager: {e}")
+        DYNAMIC_RULES_AVAILABLE = False
+
+# Initialize SQLite database for persistent storage - Fixed path to use main database
+DB_PATH = os.path.join(backend_dir, "indexing_qa.db")
+print(f"🗄️  Database path: {DB_PATH}")
+print(f"🗄️  Database exists: {os.path.exists(DB_PATH)}")
+if os.path.exists(DB_PATH):
+    print(f"🗄️  Database size: {os.path.getsize(DB_PATH)} bytes")
+
+# Verify we're using the right database
+if not os.path.exists(DB_PATH):
+    # Fallback to the main backend directory database
+    fallback_path = os.path.join(os.path.dirname(backend_dir), "backend", "indexing_qa.db")
+    if os.path.exists(fallback_path):
+        DB_PATH = fallback_path
+        print(f"🔄 Using fallback database path: {DB_PATH}")
+    else:
+        print(f"⚠️  Database not found at {DB_PATH} or {fallback_path}")
+
+print(f"✅ Final database path: {DB_PATH} (exists: {os.path.exists(DB_PATH)})")
+
+def init_database():
+    """Initialize database with proper schema"""
+    try:
+        # Create database connection
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Create all required tables from create_table.py
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS processed_records (
+                id TEXT PRIMARY KEY,
+                record_id TEXT,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                source_connector TEXT,
+                company TEXT,
+                quality_score REAL,
+                quality_level TEXT,
+                quality_checks TEXT,
+                content_metadata TEXT,
+                created_at TEXT,
+                processing_time_ms REAL,
+                trace_id TEXT,
+                llm_suggestions TEXT,
+                llm_reasoning TEXT,
+                status TEXT,
+                manual_review_status TEXT,
+                issues TEXT,
+                alert_sent BOOLEAN DEFAULT 0,
+                email_recipients TEXT,
+                alert_type TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS quality_checks (
+                id TEXT PRIMARY KEY,
+                record_id TEXT,
+                check_name TEXT,
+                status TEXT,
+                confidence_score REAL,
+                failure_reason TEXT,
+                check_metadata_json TEXT,
+                executed_at TEXT,
+                processing_time_ms REAL
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS request_logs (
+                id TEXT PRIMARY KEY,
+                trace_id TEXT,
+                endpoint TEXT,
+                method TEXT,
+                request_data TEXT,
+                response_status INTEGER,
+                response_data TEXT,
+                processing_time_ms REAL,
+                created_at TEXT,
+                error_message TEXT,
+                source_connector TEXT,
+                success BOOLEAN DEFAULT 1
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS dynamic_thresholds (
+                threshold_name TEXT PRIMARY KEY,
+                current_value REAL,
+                default_value REAL,
+                min_value REAL,
+                max_value REAL,
+                description TEXT,
+                category TEXT,
+                unit TEXT,
+                updated_by TEXT,
+                updated_at TEXT,
+                reason TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS threshold_history (
+                id TEXT PRIMARY KEY,
+                threshold_name TEXT,
+                old_value REAL,
+                new_value REAL,
+                changed_by TEXT,
+                reason TEXT,
+                timestamp TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                subject TEXT,
+                body TEXT,
+                type TEXT,
+                is_active BOOLEAN,
+                created_at TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_recipients (
+                id TEXT PRIMARY KEY,
+                email TEXT,
+                name TEXT,
+                role TEXT,
+                alert_types TEXT,
+                is_active BOOLEAN,
+                created_at TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS llm_settings_history (
+                id TEXT PRIMARY KEY,
+                changed_by TEXT,
+                old_mode TEXT,
+                new_mode TEXT,
+                old_threshold REAL,
+                new_threshold REAL,
+                timestamp TEXT,
+                reason TEXT
+            )
+        ''')
+        
+        # Create dead_letters table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS dead_letters (
+                id TEXT PRIMARY KEY,
+                trace_id TEXT,
+                raw_input TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                failed_at TEXT NOT NULL,
+                source_connector TEXT,
+                retry_count INTEGER DEFAULT 0,
+                resolved BOOLEAN DEFAULT 0
+            )
+        ''')
+        
+        # Check if processed_records table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_records'")
+        table_exists = cursor.fetchone() is not None
+        
+        if table_exists:
+            # Check for missing columns and add them
+            cursor.execute("PRAGMA table_info(processed_records)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            # Add missing columns if they don't exist
+            missing_columns = [
+                ('trace_id', 'TEXT'),
+                ('llm_suggestions', 'TEXT'),
+                ('llm_reasoning', 'TEXT'),
+                ('status', 'TEXT'),
+                ('manual_review_status', 'TEXT'),
+                ('issues', 'TEXT'),
+                ('alert_sent', 'BOOLEAN DEFAULT 0'),
+                ('email_recipients', 'TEXT'),
+                ('alert_type', 'TEXT')
+            ]
+            
+            for column_name, column_type in missing_columns:
+                if column_name not in columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE processed_records ADD COLUMN {column_name} {column_type}")
+                        print(f"Added missing column: {column_name}")
+                    except Exception as e:
+                        print(f"Error adding column {column_name}: {e}")
+        
+        conn.commit()
+        conn.close()
+        print("Database initialization completed")
+        
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+
+def populate_sample_data():
+    """Populate database with sample data for testing"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Check if we already have data
+    cursor.execute("SELECT COUNT(*) FROM processed_records")
+    if cursor.fetchone()[0] > 0:
+        print("Database already has data, skipping sample data population")
+        conn.close()
+        return
+    
+    print("Populating database with sample data...")
+    
+    sample_records = [
+        {
+            'record_id': 'sample-001',
+            'title': 'Machine Learning Best Practices',
+            'content': 'This document outlines the best practices for implementing machine learning algorithms in production environments. It covers data preprocessing, model selection, and deployment strategies.',
+            'tags': ['machine learning', 'best practices', 'production', 'algorithms'],
+            'source_connector': 'SharePoint',
+            'company': 'TechCorp Inc',
+            'quality_score': 85.5,
+            'quality_level': 'high',
+            'quality_checks': [
+                {
+                    'check_name': 'text_quality',
+                    'status': 'pass',
+                    'confidence_score': 0.9,
+                    'failure_reason': None
+                },
+                {
+                    'check_name': 'tag_text_relevance',
+                    'status': 'pass',
+                    'confidence_score': 0.85,
+                    'failure_reason': None
+                }
+            ],
+            'content_metadata': {
+                'author': 'Dr. Sarah Johnson',
+                'department': 'Data Science',
+                'document_type': 'technical_guide',
+                'word_count': 1250
+            },
+            'llm_suggestions': ['Consider adding more specific examples', 'Include code snippets for clarity'],
+            'llm_reasoning': 'Content is well-structured and relevant. Tags are appropriate and descriptive.'
+        },
+        {
+            'record_id': 'sample-002',
+            'title': 'Employee Handbook - Vacation Policy',
+            'content': 'Employees are entitled to 20 days of paid vacation per year. Vacation requests must be submitted at least 2 weeks in advance.',
+            'tags': ['hr', 'vacation', 'policy'],
+            'source_connector': 'Confluence',
+            'company': 'TechCorp Inc',
+            'quality_score': 72.0,
+            'quality_level': 'medium',
+            'quality_checks': [
+                {
+                    'check_name': 'text_quality',
+                    'status': 'pass',
+                    'confidence_score': 0.7,
+                    'failure_reason': None
+                },
+                {
+                    'check_name': 'tag_count_validation',
+                    'status': 'fail',
+                    'confidence_score': 0.6,
+                    'failure_reason': 'Too few tags: 3 < 5'
+                }
+            ],
+            'content_metadata': {
+                'author': 'HR Department',
+                'department': 'Human Resources',
+                'document_type': 'policy',
+                'word_count': 45
+            },
+            'llm_suggestions': ['Add more specific details about vacation accrual', 'Include examples of acceptable vacation reasons'],
+            'llm_reasoning': 'Content is clear but could be more detailed. Tags are relevant but could be more specific.'
+        },
+        {
+            'record_id': 'sample-003',
+            'title': 'API Documentation - User Authentication',
+            'content': 'This API provides user authentication endpoints. Use POST /auth/login to authenticate users and GET /auth/verify to validate tokens.',
+            'tags': ['api', 'authentication', 'documentation'],
+            'source_connector': 'Notion',
+            'company': 'TechCorp Inc',
+            'quality_score': 91.0,
+            'quality_level': 'high',
+            'quality_checks': [
+                {
+                    'check_name': 'text_quality',
+                    'status': 'pass',
+                    'confidence_score': 0.95,
+                    'failure_reason': None
+                },
+                {
+                    'check_name': 'tag_text_relevance',
+                    'status': 'pass',
+                    'confidence_score': 0.92,
+                    'failure_reason': None
+                }
+            ],
+            'content_metadata': {
+                'author': 'Engineering Team',
+                'department': 'Engineering',
+                'document_type': 'api_docs',
+                'word_count': 89
+            },
+            'llm_suggestions': ['Add code examples for each endpoint', 'Include error handling scenarios'],
+            'llm_reasoning': 'Excellent technical documentation with clear structure and relevant tags.'
+        }
+    ]
+    
+    for record in sample_records:
+        cursor.execute('''
+            INSERT INTO processed_records (
+                id, record_id, title, content, tags, source_connector, company,
+                quality_score, quality_level, quality_checks, content_metadata,
+                created_at, processing_time_ms, llm_suggestions, llm_reasoning, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            f"record-{record['record_id']}",  # Generate proper ID
+            record['record_id'],
+            record['title'],
+            record['content'],
+            json.dumps(record['tags']),
+            record['source_connector'],
+            record['company'],
+            record['quality_score'],
+            record['quality_level'],
+            json.dumps(record['quality_checks']),
+            json.dumps(record['content_metadata']),
+            datetime.now(UTC).isoformat(),
+            150.0,  # processing time
+            json.dumps(record['llm_suggestions']),
+            record['llm_reasoning'],
+            f"trace-{record['record_id']}"
+        ))
+    
+    conn.commit()
+    conn.close()
+    print(f"Added {len(sample_records)} sample records to database")
+
+# Initialize database
+init_database()
+
+# Populate with sample data if empty
+populate_sample_data()
+
+# Data models for API
+class ContentIngestRequest(BaseModel):
+    record_id: str
+    content: str
+    tags: List[str]
+    source_connector: str
+    content_metadata: Optional[Dict] = None
+
+class RulesCheckRequest(BaseModel):
+    content: str = Field(..., alias="document_text")
+    tags: List[str] 
+    source_connector: str
+    
+    class Config:
+        allow_population_by_field_name = True
+
+class LLMAnalysisRequest(BaseModel):
+    content: str
+    tags: List[str]
+    context: Optional[Dict] = None
+
+
+
+class RedTeamRequest(BaseModel):
+    scenario_id: str
+    content: str
+    tags: List[str]
+    test_objectives: List[str]
+    expected_issues: Optional[List[str]] = None
+
+class QualityConstraint(BaseModel):
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    weight: float
+    rule: str
+
+class SystemStats(BaseModel):
+    total_processed: int
+    rules_engine_processed: int
+    llm_judge_processed: int
+    avg_processing_time_ms: float
+    active_connectors: int
+    system_health: str
+    uptime_seconds: float
+
+# SharePoint/Jira JSON Data Models
+class SharePointAnswerRequest(BaseModel):
+    answers: List[Dict[str, Any]]
+
+class ElasticsearchDataRequest(BaseModel):
+    hits: List[Dict[str, Any]]
+
+class ProcessedSharePointRecord(BaseModel):
+    id: str
+    record_id: str
+    title: str
+    content: str
+    tags: List[str]
+    source_type: str
+    source_url: str
+    confidence: float
+    quality_score: float
+    quality_checks: List[Dict[str, Any]]
+    author_name: str
+    company: str
+    document_date: str
+    created_at: str
+    processing_time_ms: float
+    trace_id: str  # Add unique trace ID for tracking
+    llm_suggestions: Optional[List[str]] = None
+    llm_reasoning: Optional[str] = None
+
+def store_record(record_data: Dict):
+    """Store record in SQLite database with enhanced schema"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO processed_records 
+        (id, record_id, title, content, tags, source_connector, company, 
+         quality_score, quality_level, quality_checks, content_metadata,
+         created_at, processing_time_ms, trace_id, llm_suggestions, llm_reasoning,
+         status, manual_review_status, issues)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        record_data.get('id'),
+        record_data.get('record_id'),
+        record_data.get('title', ''),
+        record_data.get('content', ''),
+        json.dumps(record_data.get('tags', [])),
+        record_data.get('source_connector'),
+        record_data.get('company', ''),
+        record_data.get('quality_score', 0),
+        record_data.get('quality_level', 'medium'),
+        json.dumps(record_data.get('quality_checks', [])),
+        json.dumps(record_data.get('content_metadata', {})),
+        record_data.get('created_at'),
+        record_data.get('processing_time_ms', 0),
+        record_data.get('trace_id', ''),
+        json.dumps(record_data.get('llm_suggestions', [])),
+        record_data.get('llm_reasoning'),
+        record_data.get('status', 'flagged'),  # Use status as determined by dynamic threshold logic
+        record_data.get('manual_review_status', 'pending'),
+        json.dumps(record_data.get('issues', []))
+    ))
+    
+    conn.commit()
+    conn.close()
+
+def store_dead_letter(trace_id: str, raw_input: str, error_message: str, error_type: str, source_connector: str = None):
+    """Store failed records in dead letter queue"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Ensure source_connector is a string
+    if source_connector is None:
+        source_connector = ""
+    
+    cursor.execute('''
+        INSERT INTO dead_letters 
+        (id, trace_id, raw_input, error_message, error_type, failed_at, source_connector)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        str(uuid.uuid4()),
+        trace_id,
+        raw_input,
+        error_message,
+        error_type,
+        datetime.now(UTC).isoformat(),
+        source_connector
+    ))
+    
+    conn.commit()
+    conn.close()
+
 def get_records_from_db(filters: Dict = None, page: int = 1, page_size: int = 25):
     """Get records from SQLite database with filtering using enhanced schema"""
     try:
@@ -3515,6 +4159,48 @@ if UNIFIED_BULK_AVAILABLE:
 else:
     print("⚠️  Unified bulk endpoints not available - unified_bulk_ingest module not loaded")
 
+def extract_file_type_from_metadata(content_metadata: str, source_connector: str = "") -> str:
+    """Extract file type from content metadata or source"""
+    try:
+        if content_metadata:
+            metadata = json.loads(content_metadata) if isinstance(content_metadata, str) else content_metadata
+            
+            # Check for direct file_type field
+            if 'file_type' in metadata:
+                return metadata['file_type'].lower()
+            
+            # Extract from filename or file path
+            filename = metadata.get('filename') or metadata.get('file_name') or metadata.get('title', '')
+            if '.' in filename:
+                ext = filename.split('.')[-1].lower()
+                return ext
+            
+            # Check for document type indicators
+            doc_type = metadata.get('document_type') or metadata.get('content_type', '')
+            if doc_type:
+                if 'pdf' in doc_type.lower():
+                    return 'pdf'
+                elif 'word' in doc_type.lower() or 'docx' in doc_type.lower():
+                    return 'docx'
+                elif 'excel' in doc_type.lower() or 'xlsx' in doc_type.lower():
+                    return 'xlsx'
+                elif 'powerpoint' in doc_type.lower() or 'pptx' in doc_type.lower():
+                    return 'pptx'
+        
+        # Infer from source connector
+        source_mapping = {
+            'sharepoint': 'docx',
+            'confluence': 'html',
+            'notion': 'html',
+            'jira': 'html',
+            'gdrive': 'docx'
+        }
+        
+        return source_mapping.get(source_connector.lower(), 'unknown')
+        
+    except Exception:
+        return 'unknown'
+
 @app.get("/analytics/dashboard")
 async def get_dashboard_analytics():
     """Get real-time analytics data for dashboard"""
@@ -3535,6 +4221,7 @@ async def get_dashboard_analytics():
                 "issueBreakdownData": [],
                 "companyMetricsData": [],
                 "topFailureReasons": [],
+                "fileTypeData": [],
                 "today": {
                     "total_processed": analytics_data['total_records'],
                     "avg_quality_score": analytics_data['avg_quality_score'], 
@@ -3627,6 +4314,70 @@ async def get_dashboard_analytics():
         failure_reasons.sort(key=lambda x: x[1], reverse=True)
         failure_reasons = failure_reasons[:10]  # Top 10
         
+        # Get file type analytics
+        cursor.execute('''
+            SELECT content_metadata, source_connector, quality_score, quality_level
+            FROM processed_records 
+            WHERE DATE(created_at) >= ?
+        ''', (week_ago,))
+        
+        file_type_records = cursor.fetchall()
+        file_type_stats = defaultdict(lambda: {
+            'count': 0, 
+            'avg_quality': 0, 
+            'total_quality': 0, 
+            'issues': 0,
+            'success_rate': 0
+        })
+        
+        for metadata, source, quality_score, quality_level in file_type_records:
+            file_type = extract_file_type_from_metadata(metadata, source)
+            
+            # Normalize file type names
+            file_type_mapping = {
+                'docx': 'Microsoft Word',
+                'doc': 'Microsoft Word',
+                'xlsx': 'Microsoft Excel', 
+                'xls': 'Microsoft Excel',
+                'pptx': 'Microsoft PowerPoint',
+                'ppt': 'Microsoft PowerPoint',
+                'pdf': 'PDF Document',
+                'html': 'Web Content',
+                'txt': 'Text Document',
+                'csv': 'CSV Data',
+                'json': 'JSON Data',
+                'xml': 'XML Document',
+                'unknown': 'Unknown Type'
+            }
+            
+            display_name = file_type_mapping.get(file_type, file_type.upper())
+            stats = file_type_stats[display_name]
+            
+            stats['count'] += 1
+            if quality_score:
+                stats['total_quality'] += float(quality_score)
+            if quality_level in ['low', 'medium']:
+                stats['issues'] += 1
+        
+        # Calculate averages and success rates
+        file_type_data = []
+        for file_type, stats in file_type_stats.items():
+            if stats['count'] > 0:
+                avg_quality = stats['total_quality'] / stats['count'] if stats['total_quality'] > 0 else 0
+                success_rate = (stats['count'] - stats['issues']) / stats['count'] if stats['count'] > 0 else 0
+                
+                file_type_data.append({
+                    'fileType': file_type,
+                    'count': stats['count'],
+                    'avgQuality': round(avg_quality, 1),
+                    'issues': stats['issues'],
+                    'successRate': round(success_rate * 100, 1),
+                    'color': get_file_type_color(file_type)
+                })
+        
+        # Sort by count descending
+        file_type_data.sort(key=lambda x: x['count'], reverse=True)
+        
         conn.close()
         
         return {
@@ -3654,6 +4405,7 @@ async def get_dashboard_analytics():
                 }
                 for row in failure_reasons
             ],
+            "fileTypeData": file_type_data,
             "today": {
                 "total_processed": analytics_data['total_records'],
                 "avg_quality_score": analytics_data['avg_quality_score'], 
@@ -3694,6 +4446,116 @@ def get_issue_color(issue_type: str) -> str:
         'No Issues Detected': '#10b981'
     }
     return colors.get(issue_type, '#6b7280')
+
+def get_file_type_color(file_type: str) -> str:
+    """Get color for file type"""
+    colors = {
+        'Microsoft Word': '#2563eb',
+        'Microsoft Excel': '#16a34a', 
+        'Microsoft PowerPoint': '#dc2626',
+        'PDF Document': '#dc2626',
+        'Web Content': '#f97316',
+        'Text Document': '#6b7280',
+        'CSV Data': '#16a34a',
+        'JSON Data': '#8b5cf6',
+        'XML Document': '#f59e0b',
+        'Unknown Type': '#6b7280'
+    }
+    return colors.get(file_type, '#6b7280')
+
+@app.get("/records/filter-options")
+async def get_filter_options():
+    """Get filter options for analytics dashboard"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get companies with counts
+        cursor.execute('''
+            SELECT company, COUNT(*) as count 
+            FROM processed_records 
+            WHERE company IS NOT NULL AND company != '' 
+            GROUP BY company 
+            ORDER BY count DESC
+        ''')
+        companies = [
+            {"value": row[0], "label": row[0], "count": row[1]} 
+            for row in cursor.fetchall()
+        ]
+        
+        # Get connectors with counts
+        cursor.execute('''
+            SELECT source_connector, COUNT(*) as count 
+            FROM processed_records 
+            WHERE source_connector IS NOT NULL 
+            GROUP BY source_connector 
+            ORDER BY count DESC
+        ''')
+        connectors = [
+            {"value": row[0], "label": row[0], "count": row[1]} 
+            for row in cursor.fetchall()
+        ]
+        
+        # Get file types with counts
+        cursor.execute('''
+            SELECT content_metadata, source_connector
+            FROM processed_records 
+            WHERE content_metadata IS NOT NULL OR source_connector IS NOT NULL
+        ''')
+        
+        file_type_counts = defaultdict(int)
+        for metadata, source in cursor.fetchall():
+            file_type = extract_file_type_from_metadata(metadata, source)
+            
+            # Normalize file type names
+            file_type_mapping = {
+                'docx': 'Microsoft Word',
+                'doc': 'Microsoft Word',
+                'xlsx': 'Microsoft Excel', 
+                'xls': 'Microsoft Excel',
+                'pptx': 'Microsoft PowerPoint',
+                'ppt': 'Microsoft PowerPoint',
+                'pdf': 'PDF Document',
+                'html': 'Web Content',
+                'txt': 'Text Document',
+                'csv': 'CSV Data',
+                'json': 'JSON Data',
+                'xml': 'XML Document',
+                'unknown': 'Unknown Type'
+            }
+            
+            display_name = file_type_mapping.get(file_type, file_type.upper())
+            file_type_counts[display_name] += 1
+        
+        file_types = [
+            {"value": file_type, "label": file_type, "count": count}
+            for file_type, count in sorted(file_type_counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+        
+        conn.close()
+        
+        return {
+            "companies": companies,
+            "connectors": connectors,
+            "fileTypes": file_types,
+            "statuses": [
+                {"value": "approved", "label": "Approved"},
+                {"value": "flagged", "label": "Flagged"},
+                {"value": "pending", "label": "Pending"},
+                {"value": "under_review", "label": "Under Review"}
+            ]
+        }
+        
+    except Exception as e:
+        print(f"Error getting filter options: {e}")
+        return {
+            "companies": [],
+            "connectors": [],
+            "fileTypes": [],
+            "statuses": []
+        }
+
+
 
 @app.get("/issues")
 async def get_issues():
